@@ -93,13 +93,14 @@ class TelegramAdBot:
         async def debug_private_message(client: Client, message: Message):
             """Debug handler to log all incoming private messages."""
             user_id = message.from_user.id if message.from_user else "unknown"
-            username = message.from_user.username if message.from_user else "unknown"
+            username = message.from_user.username if message.from_user else None
             chat_id = message.chat.id if message.chat else "unknown"
             text = message.text[:100] if message.text else "(no text)"
             
+            username_str = f"@{username}" if username else "(none)"
             logger.debug(
                 f"[DEBUG] Private message received: "
-                f"from_user.id={user_id}, username=@{username}, "
+                f"from_user.id={user_id}, username={username_str}, "
                 f"chat.id={chat_id}, text={text!r}"
             )
             # Continue to other handlers
