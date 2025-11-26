@@ -1,4 +1,5 @@
 """Telegram Advertising Bot - Template Handlers"""
+import re
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -119,7 +120,6 @@ class TemplateHandlers:
                 text = message.text
                 
                 # Check for buttons in format [text](url)
-                import re
                 button_pattern = r"\[(.+?)\]\((.+?)\)"
                 buttons = []
                 for match in re.finditer(button_pattern, text):
@@ -187,7 +187,6 @@ class TemplateHandlers:
                 caption = message.text
                 
                 # Check for buttons
-                import re
                 button_pattern = r"\[(.+?)\]\((.+?)\)"
                 buttons = []
                 for match in re.finditer(button_pattern, caption):

@@ -34,6 +34,12 @@ class RateLimitConfig:
     max_concurrent_tasks: int = field(
         default_factory=lambda: int(os.getenv("MAX_CONCURRENT_TASKS", "3"))
     )
+    messages_per_account: int = field(
+        default_factory=lambda: int(os.getenv("MESSAGES_PER_ACCOUNT", "50"))
+    )
+    proxy_test_url: str = field(
+        default_factory=lambda: os.getenv("PROXY_TEST_URL", "https://api.telegram.org")
+    )
 
 
 @dataclass

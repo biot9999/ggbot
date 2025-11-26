@@ -140,7 +140,7 @@ class ProxyService:
             
             async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(
-                    "https://api.telegram.org",
+                    config.rate_limit.proxy_test_url,
                     timeout=aiohttp.ClientTimeout(total=timeout)
                 ) as response:
                     is_working = response.status == 200 or response.status == 404

@@ -1,12 +1,9 @@
 """Tests for utility functions."""
-import pytest
-from pathlib import Path
-import tempfile
 import os
-import sys
+import tempfile
+from pathlib import Path
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import pytest
 
 
 class TestHelpers:

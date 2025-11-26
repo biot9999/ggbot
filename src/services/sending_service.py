@@ -225,7 +225,7 @@ class SendingService:
         try:
             current_account_idx = task.current_account_index
             messages_per_account = 0
-            max_messages_per_account = 50  # Switch account after this many messages
+            max_messages_per_account = config.rate_limit.messages_per_account
             
             for i in range(task.current_target_index, len(targets)):
                 # Check if cancelled
