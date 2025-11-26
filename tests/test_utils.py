@@ -263,5 +263,77 @@ class TestMessageTemplate:
         assert template.media_type == "photo"
 
 
+class TestConfigParsing:
+    """Test configuration parsing functions."""
+
+    def test_parse_admin_ids_single(self, monkeypatch):
+        """Test parsing a single admin ID."""
+        monkeypatch.setenv("ADMIN_IDS", "123456789")
+        from src.config import _parse_admin_ids
+        
+        result = _parse_admin_ids()
+        assert result == {123456789}
+
+    def test_parse_admin_ids_multiple(self, monkeypatch):
+        """Test parsing multiple admin IDs."""
+        monkeypatch.setenv("ADMIN_IDS", "123456789,987654321")
+        from src.config import _parse_admin_ids
+        
+        result = _parse_admin_ids()
+        assert result == {123456789, 987654321}
+
+    def test_parse_admin_ids_with_spaces(self, monkeypatch):
+        """Test parsing admin IDs with spaces around commas."""
+        monkeypatch.setenv("ADMIN_IDS", "123456789, 987654321 , 555555555")
+        from src.config import _parse_admin_ids
+        
+        result = _parse_admin_ids()
+        assert result == {123456789, 987654321, 555555555}
+
+    def test_parse_admin_ids_empty(self, monkeypatch):
+        """Test parsing empty ADMIN_IDS."""
+        monkeypatch.setenv("ADMIN_IDS", "")
+        from src.config import _parse_admin_ids
+        
+        result = _parse_admin_ids()
+        assert result == set()
+
+    def test_parse_admin_ids_not_set(self, monkeypatch):
+        """Test parsing when ADMIN_IDS is not set."""
+        monkeypatch.delenv("ADMIN_IDS", raising=False)
+        from src.config import _parse_admin_ids
+        
+        result = _parse_admin_ids()
+        assert result == set()
+
+    def test_parse_admin_ids_invalid_skipped(self, monkeypatch, caplog):
+        """Test that invalid admin IDs are skipped with warnings."""
+        monkeypatch.setenv("ADMIN_IDS", "123456789,@username,987654321")
+        from src.config import _parse_admin_ids
+        
+        result = _parse_admin_ids()
+        # Only valid IDs should be included
+        assert result == {123456789, 987654321}
+        # Check that an error was logged for the invalid ID
+        assert "@username" in caplog.text
+
+    def test_parse_admin_ids_negative_skipped(self, monkeypatch, caplog):
+        """Test that negative admin IDs are skipped with warnings."""
+        monkeypatch.setenv("ADMIN_IDS", "123456789,-100,987654321")
+        from src.config import _parse_admin_ids
+        
+        result = _parse_admin_ids()
+        assert result == {123456789, 987654321}
+        assert "positive integer" in caplog.text
+
+    def test_parse_admin_ids_with_trailing_comma(self, monkeypatch):
+        """Test parsing admin IDs with trailing comma."""
+        monkeypatch.setenv("ADMIN_IDS", "123456789,987654321,")
+        from src.config import _parse_admin_ids
+        
+        result = _parse_admin_ids()
+        assert result == {123456789, 987654321}
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

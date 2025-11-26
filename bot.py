@@ -87,6 +87,24 @@ class TelegramAdBot:
 
     def _register_handlers(self):
         """Register all message and callback handlers."""
+        # Register debug handler first to catch all private messages
+        # This handler has group=-1 to run before other handlers for debugging
+        @self.app.on_message(filters.private, group=-1)
+        async def debug_private_message(client: Client, message: Message):
+            """Debug handler to log all incoming private messages."""
+            user_id = message.from_user.id if message.from_user else "unknown"
+            username = message.from_user.username if message.from_user else "unknown"
+            chat_id = message.chat.id if message.chat else "unknown"
+            text = message.text[:100] if message.text else "(no text)"
+            
+            logger.debug(
+                f"[DEBUG] Private message received: "
+                f"from_user.id={user_id}, username=@{username}, "
+                f"chat.id={chat_id}, text={text!r}"
+            )
+            # Continue to other handlers
+            message.continue_propagation()
+
         # Register service handlers
         account_handlers = AccountHandlers(self.account_service)
         account_handlers.register(self.app)
@@ -111,13 +129,42 @@ class TelegramAdBot:
         # Register main commands
         @self.app.on_message(filters.command("start") & filters.private)
         async def start_command(client: Client, message: Message):
-            if not self.is_admin(message.from_user.id):
-                await message.reply_text(
-                    "⛔ Access Denied\n\n"
-                    "You are not authorized to use this bot."
+            user_id = message.from_user.id
+            username = message.from_user.username or "(none)"
+            admin_ids = config.bot.admin_ids
+            
+            logger.info(
+                f"/start command received from user_id={user_id}, "
+                f"username=@{username}, admin_ids={sorted(admin_ids)}"
+            )
+            
+            if not self.is_admin(user_id):
+                logger.warning(
+                    f"Access denied for user_id={user_id}: "
+                    f"not in admin_ids={sorted(admin_ids)}"
                 )
+                # Provide diagnostic information for easier configuration
+                if not admin_ids:
+                    await message.reply_text(
+                        "⚠️ **Configuration Issue**\n\n"
+                        "No admin IDs are configured. The bot cannot verify access.\n\n"
+                        f"**Your User ID:** `{user_id}`\n\n"
+                        "To fix this, add your user ID to the `.env` file:\n"
+                        f"`ADMIN_IDS={user_id}`\n\n"
+                        "Then restart the bot."
+                    )
+                else:
+                    await message.reply_text(
+                        "⛔ **Access Denied**\n\n"
+                        "You are not authorized to use this bot.\n\n"
+                        f"**Your User ID:** `{user_id}`\n"
+                        f"**Configured Admin IDs:** `{sorted(admin_ids)}`\n\n"
+                        "If you should have access, ensure your user ID is in "
+                        "the `ADMIN_IDS` environment variable."
+                    )
                 return
 
+            logger.info(f"Admin access granted for user_id={user_id}")
             await message.reply_text(
                 "🤖 **Telegram Advertising Bot**\n\n"
                 "Welcome! This bot helps you manage bulk message sending campaigns.\n\n"
@@ -131,6 +178,26 @@ class TelegramAdBot:
                 reply_markup=main_menu_keyboard(),
             )
 
+        @self.app.on_message(filters.command("ping") & filters.private)
+        async def ping_command(client: Client, message: Message):
+            """Health check command to verify bot is responding."""
+            user_id = message.from_user.id
+            logger.debug(f"/ping received from user_id={user_id}")
+            
+            if not self.is_admin(user_id):
+                # Still respond to non-admins for basic connectivity check
+                await message.reply_text("pong")
+                return
+            
+            # Admins get detailed status
+            admin_ids = config.bot.admin_ids
+            await message.reply_text(
+                "🏓 **pong**\n\n"
+                f"Bot is running and responding to messages.\n"
+                f"Your user ID: `{user_id}`\n"
+                f"Admin IDs configured: `{sorted(admin_ids)}`"
+            )
+
         @self.app.on_message(filters.command("help") & filters.private)
         async def help_command(client: Client, message: Message):
             if not self.is_admin(message.from_user.id):
@@ -142,7 +209,8 @@ class TelegramAdBot:
                 "/start - Show main menu\n"
                 "/help - Show this help message\n"
                 "/status - Show bot status\n"
-                "/stats - Show statistics\n\n"
+                "/stats - Show statistics\n"
+                "/ping - Health check (confirms bot is responding)\n\n"
                 "**Workflow:**\n"
                 "1. Upload session files (Accounts)\n"
                 "2. Upload target user list (Targets)\n"
