@@ -1,11 +1,65 @@
 """Telegram Advertising Bot - Configuration Module"""
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Module-level logger for config parsing
+_config_logger = logging.getLogger("config")
+
+
+def _parse_admin_ids() -> Set[int]:
+    """
+    Parse ADMIN_IDS from environment variable.
+    
+    Supports comma-separated list of user IDs with optional spaces.
+    Logs clear error messages for invalid values.
+    
+    Returns:
+        Set of valid admin user IDs.
+    """
+    admin_ids_str = os.getenv("ADMIN_IDS", "").strip()
+    if not admin_ids_str:
+        _config_logger.warning(
+            "ADMIN_IDS is empty or not set. No admin users configured. "
+            "Set ADMIN_IDS in .env file with comma-separated Telegram user IDs."
+        )
+        return set()
+    
+    admin_ids: Set[int] = set()
+    raw_ids = admin_ids_str.split(",")
+    
+    for raw_id in raw_ids:
+        raw_id = raw_id.strip()
+        if not raw_id:
+            continue
+        try:
+            user_id = int(raw_id)
+            if user_id <= 0:
+                _config_logger.error(
+                    f"Invalid admin ID '{raw_id}': must be a positive integer. Skipping."
+                )
+                continue
+            admin_ids.add(user_id)
+        except ValueError:
+            _config_logger.error(
+                f"Failed to parse admin ID '{raw_id}': not a valid integer. "
+                "Use numeric Telegram user IDs, not usernames. Skipping."
+            )
+    
+    if admin_ids:
+        _config_logger.info(f"Loaded {len(admin_ids)} admin ID(s): {sorted(admin_ids)}")
+    else:
+        _config_logger.warning(
+            f"No valid admin IDs parsed from ADMIN_IDS='{admin_ids_str}'. "
+            "Ensure you use numeric Telegram user IDs separated by commas."
+        )
+    
+    return admin_ids
 
 
 @dataclass
@@ -14,9 +68,7 @@ class BotConfig:
     bot_token: str = field(default_factory=lambda: os.getenv("BOT_TOKEN", ""))
     api_id: int = field(default_factory=lambda: int(os.getenv("API_ID", "0")))
     api_hash: str = field(default_factory=lambda: os.getenv("API_HASH", ""))
-    admin_ids: List[int] = field(default_factory=lambda: [
-        int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()
-    ])
+    admin_ids: Set[int] = field(default_factory=_parse_admin_ids)
 
 
 @dataclass

@@ -96,7 +96,10 @@ BOT_TOKEN=your_bot_token_here
 API_ID=your_api_id
 API_HASH=your_api_hash
 
-# Admin User IDs (comma-separated)
+# Admin User IDs (comma-separated numeric IDs, not usernames)
+# Get your user ID by messaging @userinfobot on Telegram
+# Example with single admin: ADMIN_IDS=123456789
+# Example with multiple admins: ADMIN_IDS=123456789,987654321
 ADMIN_IDS=123456789
 
 # Rate Limiting
@@ -106,6 +109,15 @@ ACCOUNT_SWITCH_DELAY=30
 MAX_CONCURRENT_TASKS=3
 ```
 
+### Finding Your Telegram User ID | 获取用户 ID
+
+To get your Telegram user ID:
+1. Message [@userinfobot](https://t.me/userinfobot) on Telegram
+2. The bot will reply with your user ID (a numeric value like `123456789`)
+3. Use this **numeric ID** in `ADMIN_IDS`, **not** your username
+
+**Important:** Do not use `@username` format. Only numeric user IDs are supported.
+
 ## Usage | 使用方法
 
 ### Bot Commands | 机器人命令
@@ -114,6 +126,7 @@ MAX_CONCURRENT_TASKS=3
 - `/help` - Show help guide | 显示帮助
 - `/status` - Show bot status | 显示状态
 - `/stats` - Show statistics | 显示统计
+- `/ping` - Health check | 健康检查
 
 ### Workflow | 工作流程
 
