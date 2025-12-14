@@ -170,9 +170,10 @@ async def handle_purchase(query, user, months):
     )
     
     # Start payment monitoring
-    asyncio.create_task(monitor_payment(order_id, user.id, price, query.message.chat_id))
+    bot_instance = query.get_bot()
+    asyncio.create_task(monitor_payment(bot_instance, order_id, user.id, price, query.message.chat_id))
 
-async def monitor_payment(order_id: str, user_id: int, amount: float, chat_id: int):
+async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_id: int):
     """Monitor for payment in background"""
     try:
         logger.info(f"Monitoring payment for order {order_id}")
@@ -188,7 +189,7 @@ async def monitor_payment(order_id: str, user_id: int, amount: float, chat_id: i
             
             if not is_authentic:
                 db.update_order_status(order_id, 'failed')
-                await context.bot.send_message(
+                await bot.send_message(
                     chat_id=chat_id,
                     text="❌ 检测到假 USDT！\n交易已拒绝，请使用真实的 USDT 进行支付。"
                 )
@@ -213,7 +214,7 @@ async def monitor_payment(order_id: str, user_id: int, amount: float, chat_id: i
             
             if success:
                 db.update_order_status(order_id, 'completed')
-                await context.bot.send_message(
+                await bot.send_message(
                     chat_id=chat_id,
                     text=f"✅ 支付成功！\n\n"
                          f"💎 {order['months']} 个月 Telegram Premium 已开通！\n"
@@ -223,7 +224,7 @@ async def monitor_payment(order_id: str, user_id: int, amount: float, chat_id: i
                 )
             else:
                 db.update_order_status(order_id, 'failed')
-                await context.bot.send_message(
+                await bot.send_message(
                     chat_id=chat_id,
                     text="⚠️ 支付已确认，但开通失败。\n"
                          "请联系管理员处理，订单号：`{order_id}`",
@@ -234,7 +235,7 @@ async def monitor_payment(order_id: str, user_id: int, amount: float, chat_id: i
             order = db.get_order(order_id)
             if order['status'] == 'pending':
                 db.update_order_status(order_id, 'expired')
-                await context.bot.send_message(
+                await bot.send_message(
                     chat_id=chat_id,
                     text="⏰ 订单已超时\n\n"
                          "未检测到付款，订单已自动取消。\n"
