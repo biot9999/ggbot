@@ -41,9 +41,13 @@ class Database:
             'created_at': datetime.now(),
             'updated_at': datetime.now()
         }
+        # Initialize balance if not exists
         self.users.update_one(
             {'user_id': user_id},
-            {'$set': user_data},
+            {
+                '$set': user_data,
+                '$setOnInsert': {'balance': 0.0}
+            },
             upsert=True
         )
         return user_data
@@ -51,6 +55,46 @@ class Database:
     def get_user(self, user_id):
         """Get user by user_id"""
         return self.users.find_one({'user_id': user_id})
+    
+    def get_user_balance(self, user_id):
+        """Get user's balance"""
+        user = self.get_user(user_id)
+        if user:
+            return user.get('balance', 0.0)
+        return 0.0
+    
+    def update_user_balance(self, user_id, amount, operation='add'):
+        """Update user balance
+        
+        Args:
+            user_id: User ID
+            amount: Amount to add or subtract
+            operation: 'add' or 'subtract'
+        
+        Returns:
+            New balance or None if insufficient funds
+        """
+        if operation == 'add':
+            result = self.users.update_one(
+                {'user_id': user_id},
+                {'$inc': {'balance': amount}, '$set': {'updated_at': datetime.now()}}
+            )
+            user = self.get_user(user_id)
+            return user.get('balance', 0.0) if user else None
+        elif operation == 'subtract':
+            # Check if sufficient balance
+            user = self.get_user(user_id)
+            if not user or user.get('balance', 0.0) < amount:
+                return None
+            
+            result = self.users.update_one(
+                {'user_id': user_id},
+                {'$inc': {'balance': -amount}, '$set': {'updated_at': datetime.now()}}
+            )
+            user = self.get_user(user_id)
+            return user.get('balance', 0.0) if user else None
+        
+        return None
     
     # Order operations
     def create_order(self, order_id, user_id, months, price, product_type='premium', 
@@ -210,12 +254,16 @@ class Database:
         
         total_spent = sum(o['price'] for o in orders if o['status'] == 'completed')
         
+        # Get balance
+        balance = self.get_user_balance(user_id)
+        
         return {
             'total_orders': total_orders,
             'completed_orders': completed_orders,
             'pending_orders': pending_orders,
             'failed_orders': failed_orders,
-            'total_spent': total_spent
+            'total_spent': total_spent,
+            'balance': balance
         }
     
     def get_order_statistics(self):

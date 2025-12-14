@@ -22,6 +22,7 @@ ORDER_STATUS_EMOJI = {
 # Product types
 PRODUCT_TYPE_PREMIUM = 'premium'
 PRODUCT_TYPE_STARS = 'stars'
+PRODUCT_TYPE_RECHARGE = 'recharge'
 
 # Gift types
 GIFT_TYPE_SELF = 'self'

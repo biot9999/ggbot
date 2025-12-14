@@ -21,7 +21,7 @@ from fragment import fragment
 import keyboards
 import messages
 import utils
-from constants import ORDER_STATUS, PRODUCT_TYPE_PREMIUM, PRODUCT_TYPE_STARS
+from constants import ORDER_STATUS, PRODUCT_TYPE_PREMIUM, PRODUCT_TYPE_STARS, PRODUCT_TYPE_RECHARGE
 
 # Configure logging
 logging.basicConfig(
@@ -274,6 +274,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "cancel_gift":
         await handle_gift_cancellation(query, user)
     
+    # Recharge confirmation flow
+    elif data.startswith("confirm_recharge_"):
+        amount_str = data.split("_", 2)[2]
+        await handle_recharge_confirmation(query, user, float(amount_str))
+    
+    elif data == "cancel_recharge":
+        await handle_recharge_cancellation(query, user)
+    
     # Payment actions
     elif data.startswith("paid_"):
         order_id = data.split("_", 1)[1]
@@ -418,9 +426,19 @@ async def show_user_orders(query, user, page=1):
     )
 
 async def show_recharge(query):
-    """Show recharge page (feature under development)"""
+    """Show recharge page"""
+    user = query.from_user
+    
+    # Get current balance
+    balance = db.get_user_balance(user.id)
+    
     message = messages.get_recharge_message()
-    keyboard = keyboards.get_back_to_main_keyboard()
+    message = f"💰 当前余额：${balance:.2f} USDT\n\n" + message
+    
+    keyboard = keyboards.get_cancel_keyboard()
+    
+    # Set user state to awaiting recharge amount
+    db.set_user_state(user.id, 'awaiting_recharge_amount', {})
     
     await query.edit_message_text(
         message,
@@ -624,6 +642,90 @@ async def handle_gift_cancellation(query, user):
     
     utils.log_user_action(user.id, "Gift cancelled")
 
+async def handle_recharge_confirmation(query, user, amount):
+    """Handle recharge confirmation"""
+    try:
+        # Verify user state
+        user_state = db.get_user_state(user.id)
+        if not user_state or user_state.get('state') != 'confirm_recharge':
+            await query.answer("❌ 会话已过期，请重新开始", show_alert=True)
+            return
+        
+        # Create recharge order
+        order_id = str(uuid.uuid4())
+        product_name = f"余额充值 ${amount:.2f}"
+        
+        db.create_order(
+            order_id=order_id,
+            user_id=user.id,
+            months=0,
+            price=amount,
+            product_type=PRODUCT_TYPE_RECHARGE
+        )
+        
+        # Clear state
+        db.clear_user_state(user.id)
+        
+        # Generate QR code and send payment info
+        payment_text = config.PAYMENT_WALLET_ADDRESS
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(payment_text)
+        qr.make(fit=True)
+        
+        img = qr.make_image(fill_color="black", back_color="white")
+        bio = io.BytesIO()
+        img.save(bio, 'PNG')
+        bio.seek(0)
+        
+        message = messages.get_payment_message(
+            order_id=order_id,
+            product_name=product_name,
+            price=amount,
+            wallet_address=config.PAYMENT_WALLET_ADDRESS,
+            expires_in_minutes=30
+        )
+        
+        keyboard = keyboards.get_payment_keyboard(order_id)
+        
+        await query.message.reply_photo(
+            photo=bio,
+            caption=message,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        
+        # Start payment monitoring
+        bot_instance = query.get_bot()
+        asyncio.create_task(
+            monitor_payment(bot_instance, order_id, user.id, amount, query.message.chat_id)
+        )
+        
+        utils.log_order_action(order_id, "Recharge order created", f"Amount: ${amount:.2f}")
+        
+        # Edit original message
+        try:
+            await query.edit_message_text("✅ 已确认，请查看下方支付信息")
+        except Exception as e:
+            logger.debug(f"Could not edit message: {e}")
+            
+    except Exception as e:
+        logger.error(f"Error in handle_recharge_confirmation: {e}")
+        await query.answer("❌ 处理失败，请重试", show_alert=True)
+
+async def handle_recharge_cancellation(query, user):
+    """Handle recharge cancellation"""
+    db.clear_user_state(user.id)
+    
+    message = "❌ 已取消充值操作\n\n使用 /start 返回主菜单"
+    keyboard = keyboards.get_back_to_main_keyboard()
+    
+    try:
+        await query.edit_message_text(message, reply_markup=keyboard)
+    except Exception:
+        await query.message.reply_text(message, reply_markup=keyboard)
+    
+    utils.log_user_action(user.id, "Recharge cancelled")
+
 async def send_payment_info(query, order_id, product_name, price, user_id):
     """Send payment information with QR code"""
     # Generate QR code
@@ -813,6 +915,47 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 reply_markup=keyboard,
                 parse_mode='Markdown'
             )
+    
+    elif state == 'awaiting_recharge_amount':
+        # User is providing recharge amount
+        try:
+            amount = float(text.strip())
+            
+            # Validate amount
+            if amount < 5:
+                await update.message.reply_text(
+                    "❌ 充值金额不能低于 5 USDT\n\n请重新输入",
+                    reply_markup=keyboards.get_cancel_keyboard()
+                )
+                return
+            
+            if amount > 1000:
+                await update.message.reply_text(
+                    "❌ 单次充值金额不能超过 1000 USDT\n\n请重新输入",
+                    reply_markup=keyboards.get_cancel_keyboard()
+                )
+                return
+            
+            # Update state to confirm recharge
+            db.set_user_state(user.id, 'confirm_recharge', {'amount': amount})
+            
+            # Show confirmation
+            confirmation_message = messages.get_recharge_confirmation_message(amount)
+            keyboard = keyboards.get_recharge_confirmation_keyboard(amount)
+            
+            await update.message.reply_text(
+                confirmation_message,
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
+            
+        except ValueError:
+            await update.message.reply_text(
+                "❌ 无效的金额格式\n\n"
+                "请输入数字金额（例如：10 或 50.5）\n"
+                "或点击取消按钮",
+                reply_markup=keyboards.get_cancel_keyboard()
+            )
 
 # ============================================================================
 # PAYMENT MONITORING
@@ -912,6 +1055,31 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                     parse_mode='Markdown'
                 )
                 utils.log_order_action(order_id, "Completed", f"{order['product_quantity']} stars")
+            
+            elif order['product_type'] == PRODUCT_TYPE_RECHARGE:
+                # Handle balance recharge
+                new_balance = db.update_user_balance(user_id, order['price'], operation='add')
+                
+                if new_balance is not None:
+                    db.update_order_status(order_id, 'completed')
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=f"✅ 充值成功！\n\n"
+                             f"💰 充值金额：${order['price']:.2f} USDT\n"
+                             f"💳 当前余额：${new_balance:.2f} USDT\n"
+                             f"📝 交易哈希：`{tx_hash}`\n\n"
+                             f"余额可用于购买会员和星星！",
+                        parse_mode='Markdown'
+                    )
+                    utils.log_order_action(order_id, "Completed", f"Recharge ${order['price']:.2f}")
+                else:
+                    db.update_order_status(order_id, 'failed')
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=f"⚠️ 支付已确认，但充值失败。\n请联系管理员处理，订单号：`{order_id}`",
+                        parse_mode='Markdown'
+                    )
+                    utils.log_order_action(order_id, "Failed", "Balance update failed")
         
         else:
             # Payment timeout
@@ -1007,6 +1175,24 @@ async def verify_payment(query, order_id: str):
                         await query.message.reply_text(
                             f"✅ 支付验证成功！\n\n⭐ {order['product_quantity']} Stars 已充值！\n感谢您的购买！"
                         )
+                    elif order['product_type'] == PRODUCT_TYPE_RECHARGE:
+                        # Handle balance recharge
+                        new_balance = db.update_user_balance(order['user_id'], order['price'], operation='add')
+                        
+                        if new_balance is not None:
+                            db.update_order_status(order_id, 'completed')
+                            await query.message.reply_text(
+                                f"✅ 充值成功！\n\n"
+                                f"💰 充值金额：${order['price']:.2f} USDT\n"
+                                f"💳 当前余额：${new_balance:.2f} USDT\n\n"
+                                f"余额可用于购买会员和星星！"
+                            )
+                        else:
+                            db.update_order_status(order_id, 'failed')
+                            await query.message.reply_text(
+                                f"⚠️ 支付已确认，但充值失败。\n请联系管理员，订单号：`{order_id}`",
+                                parse_mode='Markdown'
+                            )
                     return
         
         await query.message.reply_text(
