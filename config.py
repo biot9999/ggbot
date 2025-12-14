@@ -18,8 +18,6 @@ PAYMENT_WALLET_ADDRESS = os.getenv('PAYMENT_WALLET_ADDRESS', '')
 
 # Fragment Configuration
 FRAGMENT_SESSION_FILE = os.getenv('FRAGMENT_SESSION_FILE', 'fragment_session.json')
-FRAGMENT_API_TOKEN = os.getenv('FRAGMENT_API_TOKEN', '')
-FRAGMENT_API_URL = os.getenv('FRAGMENT_API_URL', 'https://fragment.com/api')
 
 # Premium Package Prices (in USDT)
 PRICES = {
