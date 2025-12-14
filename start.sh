@@ -44,4 +44,4 @@ fi
 
 # Start the bot
 echo "✅ Starting bot..."
-python bot.py
+python main.py
