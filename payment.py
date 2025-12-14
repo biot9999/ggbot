@@ -7,6 +7,10 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# Retry and backoff configuration
+MAX_RETRIES = 3
+MAX_RETRY_BACKOFF = 30  # Maximum wait time between retries in seconds
+
 class TronPayment:
     def __init__(self):
         self.api_url = config.TRONGRID_API_URL
@@ -15,7 +19,7 @@ class TronPayment:
         self.wallet_address = config.PAYMENT_WALLET_ADDRESS
         self.use_free_api = False  # Flag to track if we're using free API
         self.retry_count = 0
-        self.max_retries = 3
+        self.max_retries = MAX_RETRIES
     
     def _get_headers(self, use_api_key=True):
         """Get headers for TronGrid API"""
@@ -74,11 +78,11 @@ class TronPayment:
                                     f"You may have exceeded rate limits."
                                 )
                                 # Wait before retry
-                                await asyncio.sleep(min(2 ** attempt, 30))
+                                await asyncio.sleep(min(2 ** attempt, MAX_RETRY_BACKOFF))
                                 continue
                                 
                         elif response.status == 429:
-                            wait_time = min(2 ** attempt, 60)  # Cap at 60 seconds
+                            wait_time = min(2 ** attempt, MAX_RETRY_BACKOFF)
                             logger.warning(
                                 f"TronGrid API 429 Too Many Requests - Rate limit exceeded. "
                                 f"Waiting {wait_time}s before retry {attempt+1}/{self.max_retries}"
@@ -92,7 +96,7 @@ class TronPayment:
             except Exception as e:
                 logger.error(f"Error getting transactions (attempt {attempt+1}/{self.max_retries}): {e}", exc_info=True)
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(min(2 ** attempt, 30))
+                    await asyncio.sleep(min(2 ** attempt, MAX_RETRY_BACKOFF))
                 else:
                     return None
         
@@ -130,7 +134,7 @@ class TronPayment:
                                 continue
                             else:
                                 logger.error(f"Free API also failed with status {response.status}")
-                                await asyncio.sleep(min(2 ** attempt, 30))
+                                await asyncio.sleep(min(2 ** attempt, MAX_RETRY_BACKOFF))
                                 continue
                         else:
                             logger.error(f"Failed to verify transaction: HTTP {response.status} - {response_text}")
@@ -139,7 +143,7 @@ class TronPayment:
             except Exception as e:
                 logger.error(f"Error verifying transaction (attempt {attempt+1}/{self.max_retries}): {e}", exc_info=True)
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(min(2 ** attempt, 30))
+                    await asyncio.sleep(min(2 ** attempt, MAX_RETRY_BACKOFF))
                 else:
                     return None
         
