@@ -32,3 +32,9 @@ PAYMENT_CHECK_INTERVAL = int(os.getenv('PAYMENT_CHECK_INTERVAL', '30'))  # 30 se
 
 # TronGrid API URLs
 TRONGRID_API_URL = 'https://api.trongrid.io'
+
+# Fragment API Configuration
+FRAGMENT_API_TOKEN = os.getenv('FRAGMENT_API_TOKEN', '')
+
+# Logging Configuration
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()

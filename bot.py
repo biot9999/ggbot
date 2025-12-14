@@ -3,6 +3,7 @@ import asyncio
 import qrcode
 import io
 import uuid
+import traceback
 from datetime import datetime
 from telegram import Update
 from telegram.ext import (
@@ -24,9 +25,10 @@ import utils
 from constants import ORDER_STATUS, PRODUCT_TYPE_PREMIUM, PRODUCT_TYPE_STARS, PRODUCT_TYPE_RECHARGE
 
 # Configure logging
+log_level = getattr(logging, config.LOG_LEVEL, logging.INFO)
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=log_level
 )
 logger = logging.getLogger(__name__)
 
@@ -859,6 +861,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Handle text messages (for recipient input, etc.)"""
     user = update.effective_user
     text = update.message.text
+    message = update.message
     
     # Check if user has a state
     user_state = db.get_user_state(user.id)
@@ -872,34 +875,83 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     if state == 'awaiting_recipient':
         # User is providing recipient info for gift
-        recipient_info = utils.parse_recipient_input(text)
         
-        if recipient_info['type'] is None:
-            await update.message.reply_text(
-                "❌ 无效的输入格式\n\n"
-                "请输入：\n"
-                "• @username （例如：@johndoe）\n"
-                "• 或者 User ID （例如：123456789）\n\n"
-                "或点击取消按钮取消操作",
-                reply_markup=keyboards.get_cancel_keyboard()
-            )
-            return
+        # First, check if the message contains text mention entities
+        recipient_id = None
+        recipient_username = None
+        recipient_first_name = None
         
-        # Try to fetch recipient information using Telegram API
+        if message.entities:
+            for entity in message.entities:
+                # Check for TEXT_MENTION entity (when user is @mentioned and has privacy settings)
+                if entity.type == "text_mention" and entity.user:
+                    recipient_id = entity.user.id
+                    recipient_username = entity.user.username
+                    recipient_first_name = entity.user.first_name
+                    logger.info(f"Found text_mention entity: user_id={recipient_id}, username={recipient_username}")
+                    break
+                # Check for MENTION entity (regular @username)
+                elif entity.type == "mention":
+                    # Extract username from text
+                    mention_text = text[entity.offset:entity.offset + entity.length]
+                    if mention_text.startswith('@'):
+                        recipient_username = mention_text[1:]
+                    logger.info(f"Found mention entity: username={recipient_username}")
+                    break
+        
+        # If no entity found, fall back to parsing input
+        if not recipient_id and not recipient_username:
+            recipient_info = utils.parse_recipient_input(text)
+            
+            if recipient_info['type'] is None:
+                await update.message.reply_text(
+                    "❌ 无效的输入格式\n\n"
+                    "**推荐方式：**\n"
+                    "• 使用 @ 提及功能（会显示为蓝色链接）\n"
+                    "  例如：@username\n\n"
+                    "**其他方式：**\n"
+                    "• 输入 User ID（例如：123456789）\n"
+                    "• 转发对方的消息给我\n\n"
+                    "💡 提示：使用 @ 提及时，如果显示为蓝色链接，\n"
+                    "说明可以成功识别该用户！\n\n"
+                    "或点击取消按钮取消操作",
+                    reply_markup=keyboards.get_cancel_keyboard(),
+                    parse_mode='Markdown'
+                )
+                return
+            
+            recipient_id = recipient_info['value'] if recipient_info['type'] == 'user_id' else None
+            recipient_username = recipient_info['value'] if recipient_info['type'] == 'username' else None
+        
+        # Get months and price
         months = state_data.get('months')
         prices = db.get_prices()
         price = prices[months]
         
-        recipient_id = recipient_info['value'] if recipient_info['type'] == 'user_id' else None
-        recipient_username = recipient_info['value'] if recipient_info['type'] == 'username' else None
+        # If we have recipient_id from text_mention, we can proceed directly
+        if recipient_id:
+            logger.info(f"Using recipient_id from text_mention: {recipient_id}")
+            # Try to fetch more info from bot
+            fetched_info = await fetch_recipient_info(context.bot, recipient_id, None)
+            if fetched_info:
+                recipient_username = fetched_info['username']
+                recipient_first_name = fetched_info['first_name']
+            elif not recipient_first_name:
+                # If we couldn't fetch but have ID from entity, continue with what we have
+                recipient_first_name = "User"
         
-        # If username provided, explain Bot API limitations
-        if recipient_username and not recipient_id:
+        # If username provided without ID, explain Bot API limitations
+        elif recipient_username and not recipient_id:
             await update.message.reply_text(
                 "⚠️ **关于 Username 验证的说明**\n\n"
                 "由于 Telegram Bot API 限制，我们无法直接通过 @username 获取用户信息。\n\n"
-                "**请选择以下任一方式：**\n\n"
-                "1️⃣ **转发对方的消息**（推荐）\n"
+                "**推荐方式：**\n"
+                "✨ **使用 @ 提及功能**（最简单）\n"
+                "   • 输入 @ 后选择联系人\n"
+                "   • 如果显示为蓝色链接，说明可以识别\n"
+                "   • Bot 会自动获取完整用户信息\n\n"
+                "**其他方式：**\n\n"
+                "1️⃣ **转发对方的消息**\n"
                 "   • 转发对方的任意消息给我\n"
                 "   • 我可以从转发消息中获取准确的用户 ID\n\n"
                 "2️⃣ **获取对方的 User ID**\n"
@@ -914,8 +966,19 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             return
         
-        # Fetch user information from Telegram
-        fetched_info = await fetch_recipient_info(context.bot, recipient_id, recipient_username)
+        # Fetch user information from Telegram if we only have username
+        if not recipient_id and recipient_username:
+            fetched_info = await fetch_recipient_info(context.bot, None, recipient_username)
+        elif recipient_id and not recipient_first_name:
+            fetched_info = await fetch_recipient_info(context.bot, recipient_id, recipient_username)
+        else:
+            # We already have the info from entity
+            fetched_info = {
+                'user_id': recipient_id,
+                'username': recipient_username,
+                'first_name': recipient_first_name or "User",
+                'photo_file_id': None
+            }
         
         if fetched_info is None:
             error_msg = "❌ 无法获取收礼人信息\n\n"
@@ -1176,16 +1239,28 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
 
 async def verify_payment(query, order_id: str):
     """Manually verify payment when user clicks 'I have paid'"""
+    # Immediate feedback to user
+    try:
+        await query.answer("🔍 正在验证支付，请稍候...", show_alert=False)
+    except Exception as e:
+        logger.debug(f"Could not send answer callback: {e}")
+    
+    logger.info(f"Manual payment verification requested for order: {order_id}")
+    
     order = db.get_order(order_id)
     
     if not order:
+        logger.warning(f"Order not found: {order_id}")
         await query.edit_message_text("❌ 订单不存在")
         return
     
     if order['status'] != 'pending':
         status_text = ORDER_STATUS.get(order['status'], order['status'])
+        logger.info(f"Order {order_id} status is already: {order['status']}")
         await query.edit_message_text(f"订单状态：{status_text}")
         return
+    
+    logger.debug(f"Order details - ID: {order_id}, Price: ${order['price']:.4f}, Type: {order['product_type']}")
     
     await query.edit_message_text(
         "🔍 正在验证支付...\n\n这可能需要几分钟，请稍候。\n我们会在验证完成后通知您。"
@@ -1193,42 +1268,71 @@ async def verify_payment(query, order_id: str):
     
     # Check for recent transactions
     try:
+        logger.debug(f"Fetching recent transactions for wallet: {config.PAYMENT_WALLET_ADDRESS}")
         transactions = await tron_payment.get_account_transactions(config.PAYMENT_WALLET_ADDRESS, 50)
+        
+        if not transactions:
+            logger.warning(f"No transactions returned from TronGrid API")
+            await query.message.reply_text(
+                "⚠️ 无法获取交易记录\n\n"
+                "可能的原因：\n"
+                "1. 区块链网络延迟\n"
+                "2. API 临时不可用\n\n"
+                "请稍后重试，或联系管理员。"
+            )
+            return
+        
+        logger.info(f"Checking {len(transactions)} recent transactions for order {order_id}")
         
         if transactions:
             for tx in transactions:
                 # Check if amount matches (precise to 4 decimals)
                 tx_amount = float(tx.get('value', 0)) / (10 ** tx.get('token_info', {}).get('decimals', 6))
                 
+                logger.debug(f"Checking TX {tx.get('transaction_id', '')[:8]}... - Amount: ${tx_amount:.4f} vs Expected: ${order['price']:.4f}")
+                
                 # Use tighter tolerance for unique amounts (0.00001 = 1/100 of smallest increment)
                 if abs(tx_amount - order['price']) < 0.00001:
                     tx_hash = tx.get('transaction_id')
+                    logger.info(f"Found matching transaction: {tx_hash}")
                     
                     # Check if transaction already recorded
                     existing_tx = db.get_transaction(tx_hash)
                     if existing_tx:
+                        logger.info(f"Transaction {tx_hash} already recorded")
                         continue
                     
                     # Verify authenticity
+                    logger.debug(f"Verifying USDT authenticity for {tx_hash}")
                     is_authentic = await tron_payment.verify_usdt_authenticity(tx_hash)
                     if not is_authentic:
-                        await query.message.reply_text("❌ 检测到假 USDT！请使用真实的 USDT。")
+                        logger.warning(f"Fake USDT detected in transaction {tx_hash}")
+                        await query.message.reply_text(
+                            "❌ 检测到假 USDT！\n\n"
+                            "请使用真实的 USDT TRC20 代币进行支付。\n"
+                            "合约地址应为：TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+                        )
                         db.update_order_status(order_id, 'failed')
+                        utils.log_order_action(order_id, "Failed", "Fake USDT detected")
                         return
                     
                     # Record transaction
+                    logger.info(f"Recording transaction {tx_hash} for order {order_id}")
                     db.create_transaction(tx_hash, order_id, tx_amount, tx.get('from'))
                     db.update_order_status(order_id, 'paid', tx_hash)
+                    utils.log_payment_action(tx_hash, "Verified", f"Order {order_id}")
                     
                     # Determine recipient
                     recipient_id = order.get('recipient_id') or order['user_id']
                     
                     # Gift Premium or Stars
                     if order['product_type'] == PRODUCT_TYPE_PREMIUM:
+                        logger.info(f"Attempting to gift {order['months']} months Premium to user {recipient_id}")
                         success = await fragment.gift_premium(recipient_id, order['months'])
                         
                         if success:
                             db.update_order_status(order_id, 'completed')
+                            logger.info(f"✅ Order {order_id} completed successfully")
                             
                             # Create gift record if applicable
                             if order.get('recipient_id'):
@@ -1243,49 +1347,73 @@ async def verify_payment(query, order_id: str):
                             await query.message.reply_text(
                                 f"✅ 支付验证成功！\n\n💎 {order['months']} 个月 Premium 已开通！\n感谢您的购买！"
                             )
+                            utils.log_order_action(order_id, "Completed", "Premium gifted")
                         else:
                             db.update_order_status(order_id, 'failed')
+                            logger.error(f"Failed to gift Premium for order {order_id}")
                             await query.message.reply_text(
-                                f"⚠️ 支付已确认，但开通失败。\n请联系管理员，订单号：`{order_id}`",
+                                f"⚠️ 支付已确认，但开通失败。\n\n"
+                                f"可能原因：\n"
+                                f"1. Fragment 服务暂时不可用\n"
+                                f"2. 账号验证失败\n\n"
+                                f"请联系管理员处理\n订单号：`{order_id}`",
                                 parse_mode='Markdown'
                             )
+                            utils.log_order_action(order_id, "Failed", "Premium gifting failed")
                     elif order['product_type'] == PRODUCT_TYPE_STARS:
                         db.update_order_status(order_id, 'completed')
+                        logger.info(f"✅ Stars order {order_id} completed")
                         await query.message.reply_text(
                             f"✅ 支付验证成功！\n\n⭐ {order['product_quantity']} Stars 已充值！\n感谢您的购买！"
                         )
+                        utils.log_order_action(order_id, "Completed", f"{order['product_quantity']} stars")
                     elif order['product_type'] == PRODUCT_TYPE_RECHARGE:
                         # Handle balance recharge
+                        logger.info(f"Processing balance recharge for user {order['user_id']}, amount: ${order['price']:.4f}")
                         new_balance = db.update_user_balance(order['user_id'], order['price'], operation='add')
                         
                         if new_balance is not None:
                             db.update_order_status(order_id, 'completed')
+                            logger.info(f"✅ Recharge order {order_id} completed, new balance: ${new_balance:.4f}")
                             await query.message.reply_text(
                                 f"✅ 充值成功！\n\n"
                                 f"💰 充值金额：${order['price']:.4f} USDT\n"
                                 f"💳 当前余额：${new_balance:.4f} USDT\n\n"
                                 f"余额可用于购买会员和星星！"
                             )
+                            utils.log_order_action(order_id, "Completed", f"Recharged ${order['price']:.4f}")
                         else:
                             db.update_order_status(order_id, 'failed')
+                            logger.error(f"Failed to update balance for order {order_id}")
                             await query.message.reply_text(
                                 f"⚠️ 支付已确认，但充值失败。\n请联系管理员，订单号：`{order_id}`",
                                 parse_mode='Markdown'
                             )
+                            utils.log_order_action(order_id, "Failed", "Balance update failed")
                     return
         
+        logger.info(f"No matching payment found for order {order_id}")
         await query.message.reply_text(
             "🔍 暂未检测到匹配的支付\n\n"
             "请确认：\n"
-            "1. 已完成转账\n"
-            "2. 转账金额正确\n"
-            "3. 使用了 TRC20 网络\n\n"
-            "区块链确认需要几分钟，请稍后再试。"
+            "1. ✓ 已完成转账\n"
+            "2. ✓ 转账金额正确（${:.4f} USDT）\n"
+            "3. ✓ 使用了 TRC20 网络\n"
+            "4. ✓ 转账地址正确\n\n"
+            "💡 区块链确认通常需要 1-3 分钟\n"
+            "如果您刚刚完成支付，请稍后再试。".format(order['price'])
         )
         
     except Exception as e:
-        logger.error(f"Error verifying payment: {e}")
-        await query.message.reply_text("❌ 验证失败，请稍后重试")
+        logger.error(f"Error verifying payment for order {order_id}: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        await query.message.reply_text(
+            "❌ 验证过程出现错误\n\n"
+            "可能的原因：\n"
+            "1. 网络连接问题\n"
+            "2. 区块链 API 临时不可用\n\n"
+            "请稍后重试，或联系管理员。"
+        )
 
 async def cancel_order(query, order_id: str):
     """Cancel an order"""
