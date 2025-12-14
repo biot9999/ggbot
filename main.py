@@ -98,18 +98,16 @@ def format_time_remaining(expires_at) -> str:
         return "已过期"
     
     minutes = int(remaining.total_seconds() / 60)
-
-# ============================================================================
-# UTILITY FUNCTIONS
-# ============================================================================
-
-
     seconds = int(remaining.total_seconds() % 60)
     
     if minutes > 0:
         return f"{minutes}分{seconds}秒"
     else:
         return f"{seconds}秒"
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
 
 def validate_username(username: str) -> bool:
     """Validate Telegram username format"""
@@ -1533,42 +1531,9 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 
 logger = logging.getLogger(__name__)
 
-def check_playwright_dependencies():
-    """
-    Check if Playwright dependencies are installed
-    
-    Returns:
-
 # ============================================================================
 # FRAGMENT MODULE (Fragment.com Integration)
 # ============================================================================
-
-
-        tuple: (success: bool, error_type: str or None)
-    """
-    try:
-        from playwright.sync_api import sync_playwright
-        # Just check if we can create the playwright instance and access chromium
-        # Don't actually launch browser (expensive and unnecessary)
-        with sync_playwright() as p:
-            # Try to get the executable path - this will fail if dependencies missing
-            try:
-                _ = p.chromium.executable_path
-                return True, None
-            except Exception as e:
-                error_str = str(e).lower()
-                if "looks like playwright" in error_str or "browser" in error_str:
-                    return False, "missing_browser"
-                return False, str(e)
-    except ImportError as e:
-        return False, f"No module named 'playwright'"
-    except Exception as e:
-        error_str = str(e).lower()
-        if "missing dependencies" in error_str or "host system" in error_str:
-            return False, "missing_deps"
-        elif "executable" in error_str or "browser" in error_str:
-            return False, "missing_browser"
-        return False, str(e)
 
 class FragmentAutomation:
     def __init__(self):
@@ -1584,6 +1549,38 @@ class FragmentAutomation:
             logger.info("Fragment API Token configured - will use API mode")
         else:
             logger.info("No Fragment API Token - will use browser automation mode")
+    
+    @staticmethod
+    def check_playwright_dependencies():
+        """
+        Check if Playwright dependencies are installed
+        
+        Returns:
+            tuple: (success: bool, error_type: str or None)
+        """
+        try:
+            from playwright.sync_api import sync_playwright
+            # Just check if we can create the playwright instance and access chromium
+            # Don't actually launch browser (expensive and unnecessary)
+            with sync_playwright() as p:
+                # Try to get the executable path - this will fail if dependencies missing
+                try:
+                    _ = p.chromium.executable_path
+                    return True, None
+                except Exception as e:
+                    error_str = str(e).lower()
+                    if "looks like playwright" in error_str or "browser" in error_str:
+                        return False, "missing_browser"
+                    return False, str(e)
+        except ImportError as e:
+            return False, f"No module named 'playwright'"
+        except Exception as e:
+            error_str = str(e).lower()
+            if "missing dependencies" in error_str or "host system" in error_str:
+                return False, "missing_deps"
+            elif "executable" in error_str or "browser" in error_str:
+                return False, "missing_browser"
+            return False, str(e)
     
     async def _api_request(self, endpoint: str, method: str = 'GET', data: dict = None):
         """
