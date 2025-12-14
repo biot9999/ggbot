@@ -7,7 +7,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/ggbot
 Environment="PATH=/home/ubuntu/ggbot/venv/bin"
-ExecStart=/home/ubuntu/ggbot/venv/bin/python /home/ubuntu/ggbot/bot.py
+ExecStart=/home/ubuntu/ggbot/venv/bin/python /home/ubuntu/ggbot/main.py
 Restart=always
 RestartSec=10
 
