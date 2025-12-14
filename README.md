@@ -1,24 +1,29 @@
 # 🤖 Telegram Premium 自动赠送机器人
 
-一个功能完整的 Telegram 机器人，支持用户通过 USDT (TRC20) 支付购买 Telegram Premium，支付成功后自动通过 Fragment.com 账号赠送 Premium 给用户。
+一个功能完整的 Telegram 机器人，支持用户通过 USDT (TRC20) 支付购买 Telegram Premium 和 Stars，支付成功后自动通过 Fragment.com 账号赠送给用户或好友。
 
 ## ✨ 核心功能
 
 ### 用户端功能
-- 🛍️ 选择 Premium 套餐（3/6/12个月）
+- 🛍️ 选择 Premium 套餐（3/6/12个月）或 Stars 套餐
+- 💎 为自己购买或赠送给好友
 - 💳 生成 USDT (TRC20) 支付二维码和收款地址
 - ✅ 支付后点击"我已支付"按钮
 - 🔍 自动验证支付到账
-- 🎁 支付成功后自动开通 Premium
+- 🎁 支付成功后自动开通 Premium 或充值 Stars
 - 📬 发送开通成功通知
+- 👤 用户中心查看订单历史和统计信息
+- 📋 订单分页浏览和详情查看
+- ❌ /cancel 命令随时取消当前操作
 
 ### 管理员端功能
 - 🔐 Fragment.com 账号配置工具
 - 🌐 浏览器自动化登录 Fragment 并保存 session
 - 💰 自动检查 Fragment 账户余额
-- 📊 后台监控 USDT 支付
+- 📊 完整的统计面板（订单、收入、用户统计）
 - 🎁 自动调用 Fragment 赠送 Premium
-- 💵 会员价格可由管理员自定义设置
+- 💵 会员和 Stars 价格可由管理员自定义设置
+- 🔄 自动重试机制提高成功率
 
 ### 支付系统
 - 💎 支持 USDT (TRC20) 支付
@@ -27,11 +32,22 @@
 - ⚡ 支付确认后触发自动开通
 - 🛡️ 识别真假 USDT 功能，防止假付款
 - 🔄 支持手动验证支付状态
+- ⏰ 30分钟支付超时自动取消
 
 ### 数据管理
 - 📋 订单状态管理（pending/paid/completed/failed/expired/cancelled）
 - 👥 用户会员信息管理
 - 📝 交易日志记录
+- 🎁 礼物赠送记录
+- 📊 用户统计数据
+
+### UI/UX 优化
+- 🎨 美化的2列网格主菜单
+- 💎 优化的Premium和Stars购买页面
+- 📦 详细的订单信息展示
+- 💳 清晰的支付信息和防诈骗提示
+- 👤 完整的用户中心界面
+- ↩️ 所有页面均有返回主菜单按钮
 
 ## 🔧 技术栈
 
@@ -149,9 +165,11 @@ sudo systemctl status telegram-premium-bot
 ```
 
 ### 用户命令
-- `/start` - 开始使用机器人
+- `/start` - 开始使用机器人，显示主菜单
 - `/buy` - 购买 Premium 会员
-- `/status` - 查看订单状态
+- `/status` - 查看用户中心和订单统计
+- `/help` - 获取帮助信息
+- `/cancel` - 取消当前操作，返回主菜单
 - `/help` - 获取帮助
 
 ### 管理员命令
@@ -241,10 +259,33 @@ sudo systemctl status telegram-premium-bot
 ### 项目结构
 ```
 ggbot/
-├── bot.py                          # 主机器人文件
+├── bot.py                          # 主机器人文件（重构后）
 ├── config.py                       # 配置管理
-├── database.py                     # 数据库操作
+├── database.py                     # 数据库操作（扩展统计功能）
 ├── payment.py                      # 支付系统
+├── fragment.py                     # Fragment 自动化（改进登录）
+├── keyboards.py                    # 按钮布局管理（新增）
+├── messages.py                     # 消息模板管理（新增）
+├── utils.py                        # 工具函数（新增）
+├── constants.py                    # 常量定义（新增）
+├── requirements.txt                # 依赖列表
+├── start.sh                        # 启动脚本
+├── telegram-premium-bot.service    # Systemd 服务文件
+├── .env.example                    # 环境变量示例
+├── .gitignore                      # Git 忽略文件
+└── README.md                       # 项目文档
+```
+
+### 代码架构改进
+本次更新重构了代码结构，提高了可维护性：
+
+- **keyboards.py**: 统一管理所有按钮布局，包括主菜单、购买页面、管理员面板等
+- **messages.py**: 统一管理所有消息模板，便于统一修改文案
+- **utils.py**: 通用工具函数，如时间格式化、用户名验证、日志记录等
+- **constants.py**: 常量定义，避免硬编码
+- **database.py**: 扩展了统计方法，支持订单、收入、用户统计
+- **fragment.py**: 改进了登录流程，增加了重试机制和更详细的错误处理
+- **bot.py**: 完全重构，使用模块化设计，支持所有新功能
 ├── fragment.py                     # Fragment 自动化
 ├── requirements.txt                # 依赖列表
 ├── start.sh                        # 启动脚本
@@ -255,13 +296,24 @@ ggbot/
 ```
 
 ### 扩展功能
-可以考虑添加：
+本项目已实现的高级功能：
+- 🎁 **为他人购买**: 支持购买 Premium 后赠送给好友
+- ⭐ **Stars 购买**: 支持购买 Telegram Stars（基础实现）
+- 📊 **统计面板**: 管理员可查看完整的订单、收入、用户统计
+- 👤 **用户中心**: 用户可查看个人订单历史和消费统计
+- 🎨 **UI 美化**: 2列网格布局、优化的消息格式、清晰的信息展示
+- ↩️ **便捷导航**: 所有页面都有返回主菜单的按钮
+- ❌ **取消功能**: /cancel 命令可随时取消当前操作
+- 🔄 **重试机制**: Fragment 操作失败自动重试
+- 📝 **详细日志**: 完整的操作日志记录
+
+可以考虑继续添加：
 - 🌍 多语言支持
 - 💳 更多支付方式（如 TON、ETH）
-- 📊 更详细的统计面板
 - 🔔 订单状态推送通知
 - 💬 客服系统
 - 🎫 优惠券系统
+- 💰 用户余额充值功能
 
 ## ⚠️ 注意事项
 
