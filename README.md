@@ -114,9 +114,38 @@ PAYMENT_CHECK_INTERVAL=30  # 30秒检查一次
 
 ## 🚀 使用方法
 
-### 启动机器人
+### 快速启动（推荐）
+使用提供的启动脚本：
+```bash
+./start.sh
+```
+
+脚本会自动：
+- 检查 .env 配置
+- 创建虚拟环境
+- 安装依赖
+- 安装 Playwright 浏览器
+- 启动机器人
+
+### 手动启动
 ```bash
 python bot.py
+```
+
+### 生产环境部署（使用 systemd）
+1. 编辑 `telegram-premium-bot.service` 文件，修改路径和用户
+2. 复制到 systemd 目录：
+```bash
+sudo cp telegram-premium-bot.service /etc/systemd/system/
+```
+3. 启用并启动服务：
+```bash
+sudo systemctl enable telegram-premium-bot
+sudo systemctl start telegram-premium-bot
+```
+4. 查看状态：
+```bash
+sudo systemctl status telegram-premium-bot
 ```
 
 ### 用户命令
@@ -212,15 +241,17 @@ python bot.py
 ### 项目结构
 ```
 ggbot/
-├── bot.py              # 主机器人文件
-├── config.py           # 配置管理
-├── database.py         # 数据库操作
-├── payment.py          # 支付系统
-├── fragment.py         # Fragment 自动化
-├── requirements.txt    # 依赖列表
-├── .env.example        # 环境变量示例
-├── .gitignore          # Git 忽略文件
-└── README.md           # 项目文档
+├── bot.py                          # 主机器人文件
+├── config.py                       # 配置管理
+├── database.py                     # 数据库操作
+├── payment.py                      # 支付系统
+├── fragment.py                     # Fragment 自动化
+├── requirements.txt                # 依赖列表
+├── start.sh                        # 启动脚本
+├── telegram-premium-bot.service    # Systemd 服务文件
+├── .env.example                    # 环境变量示例
+├── .gitignore                      # Git 忽略文件
+└── README.md                       # 项目文档
 ```
 
 ### 扩展功能
@@ -258,18 +289,83 @@ ggbot/
 
 ### 机器人无法启动
 - 检查 Bot Token 是否正确
+  ```bash
+  grep TELEGRAM_BOT_TOKEN .env
+  ```
 - 确认 MongoDB 已启动
-- 查看日志文件排查错误
+  ```bash
+  sudo systemctl status mongodb
+  ```
+- 查看详细错误日志
+  ```bash
+  python bot.py
+  ```
 
 ### 支付检测不到
 - 确认 TronGrid API 配置正确
 - 检查钱包地址是否正确
+  ```bash
+  grep PAYMENT_WALLET_ADDRESS .env
+  ```
 - 确保用户使用了 TRC20 网络
+- 检查 TronGrid API 额度是否用完
+- 手动测试 TronGrid API：
+  ```bash
+  curl "https://api.trongrid.io/v1/accounts/YOUR_ADDRESS/transactions/trc20?limit=10"
+  ```
 
 ### Fragment 登录失败
 - 确保安装了 Playwright 浏览器
+  ```bash
+  playwright install chromium
+  ```
 - 检查网络连接
 - 尝试重新登录
+  ```bash
+  rm fragment_session.json
+  # 然后在机器人中使用 /login 命令
+  ```
+- 在服务器上运行需要图形界面或 Xvfb
+
+### MongoDB 连接失败
+- 确认 MongoDB 服务已启动
+  ```bash
+  sudo systemctl start mongodb
+  ```
+- 检查 MongoDB URI 配置
+  ```bash
+  grep MONGODB_URI .env
+  ```
+- 测试 MongoDB 连接
+  ```bash
+  mongo --eval "db.version()"
+  ```
+
+### 依赖安装失败
+- 更新 pip
+  ```bash
+  pip install --upgrade pip
+  ```
+- 安装系统依赖（Ubuntu/Debian）
+  ```bash
+  sudo apt-get install python3-dev libpq-dev
+  ```
+- 使用虚拟环境
+  ```bash
+  python3 -m venv venv
+  source venv/bin/activate
+  pip install -r requirements.txt
+  ```
+
+### 日志查看
+- 查看 systemd 服务日志
+  ```bash
+  sudo journalctl -u telegram-premium-bot -f
+  ```
+- 查看实时日志
+  ```bash
+  python bot.py  # 直接运行查看输出
+  ```
 
 ## 📝 License
 
