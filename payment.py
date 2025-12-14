@@ -2,6 +2,7 @@ import aiohttp
 import asyncio
 import logging
 import time
+import json
 from typing import Optional, Dict
 import config
 
@@ -59,7 +60,7 @@ class TronPayment:
                                 data = await response.json()
                                 logger.info(f"Successfully fetched {len(data.get('data', []))} transactions")
                                 return data.get('data', [])
-                            except Exception as e:
+                            except (json.JSONDecodeError, aiohttp.ContentTypeError) as e:
                                 logger.error(f"Error parsing response JSON: {e}")
                                 return None
                                 

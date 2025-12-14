@@ -90,7 +90,11 @@ class FragmentAutomation:
                         logger.debug(f"Fragment API Response - Body: {response_text}")
                         
                         if response.status == 200:
-                            return await response.json()
+                            try:
+                                return await response.json()
+                            except (json.JSONDecodeError, aiohttp.ContentTypeError) as e:
+                                logger.error(f"Error parsing Fragment API JSON response: {e}")
+                                return None
                         else:
                             logger.error(f"Fragment API error: {response.status} - {response_text}")
                             return None
@@ -101,7 +105,11 @@ class FragmentAutomation:
                         logger.debug(f"Fragment API Response - Body: {response_text}")
                         
                         if response.status == 200:
-                            return await response.json()
+                            try:
+                                return await response.json()
+                            except (json.JSONDecodeError, aiohttp.ContentTypeError) as e:
+                                logger.error(f"Error parsing Fragment API JSON response: {e}")
+                                return None
                         else:
                             logger.error(f"Fragment API error: {response.status} - {response_text}")
                             return None

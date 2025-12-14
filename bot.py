@@ -3,7 +3,6 @@ import asyncio
 import qrcode
 import io
 import uuid
-import traceback
 from datetime import datetime
 from telegram import Update
 from telegram.ext import (
