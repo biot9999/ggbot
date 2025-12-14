@@ -1538,17 +1538,10 @@ logger = logging.getLogger(__name__)
 class FragmentAutomation:
     def __init__(self):
         self.session_file = config.FRAGMENT_SESSION_FILE
-        self.api_token = config.FRAGMENT_API_TOKEN
         self.playwright = None
         self.browser = None
         self.context = None
         self.page = None
-        self.use_api = bool(self.api_token)  # Use API if token is configured
-        
-        if self.use_api:
-            logger.info("Fragment API Token configured - will use API mode")
-        else:
-            logger.info("No Fragment API Token - will use browser automation mode")
     
     @staticmethod
     def check_playwright_dependencies():
@@ -1581,69 +1574,6 @@ class FragmentAutomation:
             elif "executable" in error_str or "browser" in error_str:
                 return False, "missing_browser"
             return False, str(e)
-    
-    async def _api_request(self, endpoint: str, method: str = 'GET', data: dict = None):
-        """
-        Make API request to Fragment API
-        
-        Args:
-            endpoint: API endpoint (e.g., '/balance', '/gift')
-            method: HTTP method (GET, POST, etc.)
-            data: Request body data for POST requests
-            
-        Returns:
-            Response JSON or None on error
-        """
-        if not self.api_token:
-            logger.error("Fragment API Token not configured")
-            return None
-        
-        try:
-            base_url = config.FRAGMENT_API_URL
-            url = f"{base_url}{endpoint}"
-            headers = {
-                'Authorization': f'Bearer {self.api_token}',
-                'Content-Type': 'application/json'
-            }
-            
-            logger.debug(f"Fragment API Request - {method} {url}")
-            if data:
-                logger.debug(f"Fragment API Request - Data: {data}")
-            
-            async with aiohttp.ClientSession() as session:
-                if method == 'GET':
-                    async with session.get(url, headers=headers) as response:
-                        response_text = await response.text()
-                        logger.debug(f"Fragment API Response - Status: {response.status}")
-                        logger.debug(f"Fragment API Response - Body: {response_text}")
-                        
-                        if response.status == 200:
-                            try:
-                                return await response.json()
-                            except (json.JSONDecodeError, aiohttp.ContentTypeError) as e:
-                                logger.error(f"Error parsing Fragment API JSON response: {e}")
-                                return None
-                        else:
-                            logger.error(f"Fragment API error: {response.status} - {response_text}")
-                            return None
-                elif method == 'POST':
-                    async with session.post(url, headers=headers, json=data) as response:
-                        response_text = await response.text()
-                        logger.debug(f"Fragment API Response - Status: {response.status}")
-                        logger.debug(f"Fragment API Response - Body: {response_text}")
-                        
-                        if response.status == 200:
-                            try:
-                                return await response.json()
-                            except (json.JSONDecodeError, aiohttp.ContentTypeError) as e:
-                                logger.error(f"Error parsing Fragment API JSON response: {e}")
-                                return None
-                        else:
-                            logger.error(f"Fragment API error: {response.status} - {response_text}")
-                            return None
-        except Exception as e:
-            logger.error(f"Fragment API request error: {e}", exc_info=True)
-            return None
     
     async def init_browser(self):
         """Initialize Playwright browser"""
@@ -1829,22 +1759,9 @@ class FragmentAutomation:
             return False
     
     async def get_balance(self):
-        """Get Fragment account balance, prioritizing API if available"""
+        """Get Fragment account balance"""
         try:
-            # Try API method first if token is configured
-            if self.use_api:
-                logger.debug("Getting balance via Fragment API")
-                result = await self._api_request('/balance', method='GET')
-                
-                if result and 'balance' in result:
-                    balance = float(result['balance'])
-                    logger.info(f"Balance from API: {balance} TON")
-                    return balance
-                else:
-                    logger.warning("API balance request failed, falling back to browser")
-                    # Fall through to browser method
-            
-            # Browser automation method (original implementation)
+            # Browser automation method
             if not self.page:
                 if not await self.restore_session():
                     logger.error("Cannot restore session for balance check")
@@ -1886,7 +1803,6 @@ class FragmentAutomation:
     async def gift_premium(self, user_id: int, months: int, max_retries: int = 3):
         """
         Gift Telegram Premium to a user with retry mechanism
-        Prioritizes API method if token is configured, falls back to browser automation
         
         Args:
             user_id: Telegram user ID of the recipient
@@ -1898,28 +1814,7 @@ class FragmentAutomation:
         """
         logger.info(f"Gifting {months} months Premium to user {user_id}")
         
-        # Try API method first if token is configured
-        if self.use_api:
-            logger.info("Attempting to gift Premium via Fragment API")
-            try:
-                result = await self._api_request('/gift', method='POST', data={
-                    'user_id': user_id,
-                    'months': months,
-                    'product_type': 'premium'
-                })
-                
-                if result and result.get('success'):
-                    logger.info(f"✅ Successfully gifted {months} months Premium via API to user {user_id}")
-                    return True
-                else:
-                    logger.warning("API gift failed, falling back to browser automation")
-                    # Fall through to browser automation
-            except Exception as e:
-                logger.error(f"Error using Fragment API: {e}")
-                logger.warning("Falling back to browser automation")
-                # Fall through to browser automation
-        
-        # Browser automation method (original implementation)
+        # Browser automation method
         for attempt in range(max_retries):
             try:
                 logger.info(f"Attempting to gift Premium via browser (attempt {attempt + 1}/{max_retries})")
