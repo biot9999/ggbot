@@ -1658,8 +1658,6 @@ class FragmentAutomation:
             random_part = random.randint(100000, 999999)
             return f"/tmp/{prefix}_{timestamp}_{random_part}{suffix}"
     
-    
-    
     async def login_with_telegram(self, max_retries=2):
         """
         Interactive login with Telegram
@@ -1887,6 +1885,7 @@ class FragmentAutomation:
                 try:
                     # Wait for navigation away from login page or success indicators
                     # Optimized: cache innerText and use efficient selectors
+                    # Note: cookie check only verifies presence, doesn't read value (secure)
                     await self.page.wait_for_function(
                         """() => {
                             const text = document.body.innerText;
@@ -1894,7 +1893,7 @@ class FragmentAutomation:
                                 text.includes('Balance'),
                                 text.includes('My Items'),
                                 text.includes('Log out') || text.includes('Logout'),
-                                document.cookie.includes('stel_token'),
+                                document.cookie.includes('stel_token'),  // Only checks presence, not value
                                 window.location.pathname !== '/',
                                 document.querySelector('[class*="avatar"],[class*="profile"]') !== null
                             ];
