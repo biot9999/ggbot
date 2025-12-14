@@ -1544,7 +1544,7 @@ class FragmentAutomation:
         self.page = None
     
     @staticmethod
-    def check_playwright_dependencies():
+    async def check_playwright_dependencies():
         """
         Check if Playwright dependencies are installed
         
@@ -1552,10 +1552,10 @@ class FragmentAutomation:
             tuple: (success: bool, error_type: str or None)
         """
         try:
-            from playwright.sync_api import sync_playwright
+            from playwright.async_api import async_playwright
             # Just check if we can create the playwright instance and access chromium
             # Don't actually launch browser (expensive and unnecessary)
-            with sync_playwright() as p:
+            async with async_playwright() as p:
                 # Try to get the executable path - this will fail if dependencies missing
                 try:
                     _ = p.chromium.executable_path
@@ -2164,7 +2164,7 @@ async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Check Playwright dependencies
-    deps_ok, error_type = fragment.check_playwright_dependencies()
+    deps_ok, error_type = await fragment.check_playwright_dependencies()
     if not deps_ok:
         if error_type == "missing_deps":
             await update.message.reply_text(
