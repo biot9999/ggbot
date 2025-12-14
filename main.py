@@ -19,6 +19,8 @@ import json
 import re
 import aiohttp
 import time
+import tempfile
+import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 from pymongo import MongoClient
@@ -1523,19 +1525,16 @@ class TronPayment:
 
 # Global payment instance
 tron_payment = TronPayment()
-import json
-import logging
-import re
-import aiohttp
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
-
-logger = logging.getLogger(__name__)
 
 # ============================================================================
 # FRAGMENT MODULE (Fragment.com Integration)
 # ============================================================================
 
 class FragmentAutomation:
+    # Fragment URL constants
+    FRAGMENT_URLS = ['https://fragment.com', 'https://www.fragment.com']
+    FRAGMENT_BASE_PATHS = ['https://fragment.com/', 'https://www.fragment.com/']
+    
     def __init__(self):
         self.session_file = config.FRAGMENT_SESSION_FILE
         self.playwright = None
@@ -1609,6 +1608,60 @@ class FragmentAutomation:
             logger.error(f"Error saving session: {e}")
             return False
     
+    @staticmethod
+    def _save_debug_file(content, prefix, suffix, mode='w'):
+        """
+        Safely save debug files with random suffix to prevent symlink attacks
+        
+        Args:
+            content: Content to save (str or bytes)
+            prefix: File prefix (e.g., 'fragment_page')
+            suffix: File suffix (e.g., '.html' or '.png')
+            mode: File mode ('w' for text, 'wb' for binary)
+        
+        Returns:
+            Path to saved file or None if failed
+        """
+        try:
+            # Create temp file with random suffix in /tmp
+            fd, filepath = tempfile.mkstemp(suffix=suffix, prefix=f"{prefix}_", dir='/tmp')
+            try:
+                if mode == 'wb':
+                    os.write(fd, content)
+                else:
+                    os.write(fd, content.encode('utf-8'))
+            finally:
+                os.close(fd)
+            logger.info(f"Saved debug file to {filepath}")
+            return filepath
+        except Exception as e:
+            logger.debug(f"Could not save debug file: {e}")
+            return None
+    
+    @staticmethod
+    def _get_temp_path(prefix, suffix):
+        """
+        Get a temporary file path with random component to prevent symlink attacks
+        
+        Args:
+            prefix: File prefix (e.g., 'fragment_screenshot')
+            suffix: File suffix (e.g., '.png')
+        
+        Returns:
+            Path to temp file
+        """
+        try:
+            fd, filepath = tempfile.mkstemp(suffix=suffix, prefix=f"{prefix}_", dir='/tmp')
+            os.close(fd)  # Close immediately, we'll let playwright write to it
+            return filepath
+        except Exception as e:
+            logger.debug(f"Could not create temp path: {e}")
+            # Fallback to /tmp with timestamp
+            import time
+            return f"/tmp/{prefix}_{int(time.time())}_{random.randint(1000, 9999)}{suffix}"
+    
+    
+    
     async def login_with_telegram(self, max_retries=2):
         """
         Interactive login with Telegram
@@ -1636,8 +1689,7 @@ class FragmentAutomation:
                 self.page = await self.context.new_page()
                 
                 # Try both fragment.com and www.fragment.com
-                urls = ['https://fragment.com', 'https://www.fragment.com']
-                url = urls[retry_attempt % len(urls)]
+                url = self.FRAGMENT_URLS[retry_attempt % len(self.FRAGMENT_URLS)]
                 
                 # Navigate to Fragment
                 logger.info(f"Navigating to {url}...")
@@ -1649,9 +1701,7 @@ class FragmentAutomation:
                 # Save initial page state for debugging
                 try:
                     html_content = await self.page.content()
-                    with open('/tmp/fragment_page_initial.html', 'w', encoding='utf-8') as f:
-                        f.write(html_content)
-                    logger.info("Saved initial page HTML to /tmp/fragment_page_initial.html")
+                    self._save_debug_file(html_content, 'fragment_page_initial', '.html')
                 except Exception as e:
                     logger.debug(f"Could not save HTML: {e}")
                 
@@ -1752,13 +1802,12 @@ class FragmentAutomation:
                         logger.error("Could not find login button and not logged in")
                         # Save debugging info
                         try:
-                            await self.page.screenshot(path='/tmp/fragment_login_error.png', full_page=True)
-                            logger.info("Screenshot saved to /tmp/fragment_login_error.png")
+                            screenshot_path = self._get_temp_path('fragment_login_error', '.png')
+                            await self.page.screenshot(path=screenshot_path, full_page=True)
+                            logger.info(f"Screenshot saved to {screenshot_path}")
                             
                             html_content = await self.page.content()
-                            with open('/tmp/fragment_page_error.html', 'w', encoding='utf-8') as f:
-                                f.write(html_content)
-                            logger.info("Saved error page HTML to /tmp/fragment_page_error.html")
+                            self._save_debug_file(html_content, 'fragment_page_error', '.html')
                         except Exception as e:
                             logger.debug(f"Could not save debug info: {e}")
                         
@@ -1769,8 +1818,9 @@ class FragmentAutomation:
                 
                 # Take screenshot after login button clicked
                 try:
-                    await self.page.screenshot(path='/tmp/fragment_after_login_click.png')
-                    logger.info("Screenshot saved to /tmp/fragment_after_login_click.png")
+                    screenshot_path = self._get_temp_path('fragment_after_login_click', '.png')
+                    await self.page.screenshot(path=screenshot_path)
+                    logger.info(f"Screenshot saved to {screenshot_path}")
                 except Exception as e:
                     logger.debug(f"Could not save screenshot: {e}")
                 
@@ -1796,8 +1846,9 @@ class FragmentAutomation:
                             logger.info(f"QR code detected with selector: {selector}")
                             # Take screenshot of QR code
                             try:
-                                await self.page.screenshot(path='/tmp/fragment_qr_code.png')
-                                logger.info("QR code screenshot saved to /tmp/fragment_qr_code.png")
+                                screenshot_path = self._get_temp_path('fragment_qr_code', '.png')
+                                await self.page.screenshot(path=screenshot_path)
+                                logger.info(f"QR code screenshot saved to {screenshot_path}")
                             except Exception as e:
                                 logger.debug(f"Could not save QR screenshot: {e}")
                             break
@@ -1837,19 +1888,19 @@ class FragmentAutomation:
                 # Wait for either successful login or timeout
                 try:
                     # Wait for navigation away from login page or success indicators
+                    # Optimized: cache innerText and use efficient selectors
                     await self.page.wait_for_function(
                         """() => {
+                            const text = document.body.innerText;
                             const indicators = [
-                                document.body.innerText.includes('Balance'),
-                                document.body.innerText.includes('My Items'),
-                                document.body.innerText.includes('Log out'),
-                                document.body.innerText.includes('Logout'),
+                                text.includes('Balance'),
+                                text.includes('My Items'),
+                                text.includes('Log out') || text.includes('Logout'),
                                 document.cookie.includes('stel_token'),
                                 window.location.pathname !== '/',
-                                document.querySelector('[class*="avatar"]') !== null,
-                                document.querySelector('[class*="profile"]') !== null
+                                document.querySelector('[class*="avatar"],[class*="profile"]') !== null
                             ];
-                            return indicators.filter(x => x).length >= 2;  // At least 2 indicators
+                            return indicators.filter(Boolean).length >= 2;  // At least 2 indicators
                         }""",
                         timeout=180000  # 3 minutes for login (QR scan or phone confirmation)
                     )
@@ -1866,7 +1917,7 @@ class FragmentAutomation:
                         'My Items' in content,
                         'Log out' in content,
                         'Logout' in content,
-                        current_url != 'https://fragment.com/' and current_url != 'https://www.fragment.com/',
+                        current_url not in self.FRAGMENT_BASE_PATHS,
                     ]
                     
                     success_count = sum(success_indicators)
@@ -1880,8 +1931,9 @@ class FragmentAutomation:
                         
                         # Save success page for debugging
                         try:
-                            await self.page.screenshot(path='/tmp/fragment_login_success.png')
-                            logger.info("Success screenshot saved to /tmp/fragment_login_success.png")
+                            screenshot_path = self._get_temp_path('fragment_login_success', '.png')
+                            await self.page.screenshot(path=screenshot_path)
+                            logger.info(f"Success screenshot saved to {screenshot_path}")
                         except Exception as e:
                             logger.debug(f"Could not save success screenshot: {e}")
                         
@@ -1891,11 +1943,10 @@ class FragmentAutomation:
                         logger.warning("Login page changed but couldn't confirm success with enough indicators")
                         # Save uncertain state for debugging
                         try:
-                            await self.page.screenshot(path='/tmp/fragment_login_uncertain.png', full_page=True)
+                            screenshot_path = self._get_temp_path('fragment_login_uncertain', '.png')
+                            await self.page.screenshot(path=screenshot_path, full_page=True)
                             html_content = await self.page.content()
-                            with open('/tmp/fragment_page_uncertain.html', 'w', encoding='utf-8') as f:
-                                f.write(html_content)
-                            logger.info("Saved uncertain state to /tmp/fragment_login_uncertain.png and HTML")
+                            self._save_debug_file(html_content, 'fragment_page_uncertain', '.html')
                         except Exception as e:
                             logger.debug(f"Could not save debug info: {e}")
                         
@@ -1908,13 +1959,12 @@ class FragmentAutomation:
                     logger.error(f"Login timeout after 3 minutes: {e}")
                     # Take screenshot for debugging
                     try:
-                        await self.page.screenshot(path='/tmp/fragment_login_timeout.png', full_page=True)
-                        logger.info("Timeout screenshot saved to /tmp/fragment_login_timeout.png")
+                        screenshot_path = self._get_temp_path('fragment_login_timeout', '.png')
+                        await self.page.screenshot(path=screenshot_path, full_page=True)
+                        logger.info(f"Timeout screenshot saved to {screenshot_path}")
                         
                         html_content = await self.page.content()
-                        with open('/tmp/fragment_page_timeout.html', 'w', encoding='utf-8') as f:
-                            f.write(html_content)
-                        logger.info("Saved timeout page HTML to /tmp/fragment_page_timeout.html")
+                        self._save_debug_file(html_content, 'fragment_page_timeout', '.html')
                     except Exception as screenshot_error:
                         logger.debug(f"Could not save timeout debug info: {screenshot_error}")
                     
@@ -1934,13 +1984,12 @@ class FragmentAutomation:
                 # Take screenshot for debugging
                 try:
                     if self.page:
-                        await self.page.screenshot(path=f'/tmp/fragment_login_exception_{retry_attempt}.png', full_page=True)
-                        logger.info(f"Exception screenshot saved to /tmp/fragment_login_exception_{retry_attempt}.png")
+                        screenshot_path = self._get_temp_path(f'fragment_login_exception_{retry_attempt}', '.png')
+                        await self.page.screenshot(path=screenshot_path, full_page=True)
+                        logger.info(f"Exception screenshot saved to {screenshot_path}")
                         
                         html_content = await self.page.content()
-                        with open(f'/tmp/fragment_page_exception_{retry_attempt}.html', 'w', encoding='utf-8') as f:
-                            f.write(html_content)
-                        logger.info(f"Saved exception page HTML to /tmp/fragment_page_exception_{retry_attempt}.html")
+                        self._save_debug_file(html_content, f'fragment_page_exception_{retry_attempt}', '.html')
                 except Exception as screenshot_error:
                     logger.debug(f"Could not save exception debug info: {screenshot_error}")
                 
