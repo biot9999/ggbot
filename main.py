@@ -80,11 +80,6 @@ PREMIUM_PACKAGES = [3, 6, 12]
 # Stars package options (quantity)
 STARS_PACKAGES = [100, 250, 500, 1000, 2500]
 
-import logging
-import random
-from datetime import datetime, timedelta
-from typing import Optional, Dict
-
 logger = logging.getLogger(__name__)
 
 def format_time_remaining(expires_at) -> str:
@@ -1651,14 +1646,17 @@ class FragmentAutomation:
             Path to temp file
         """
         try:
+            # Use mkstemp to create file securely, but note: playwright will overwrite it
+            # This is acceptable since we've claimed the filename already
             fd, filepath = tempfile.mkstemp(suffix=suffix, prefix=f"{prefix}_", dir='/tmp')
-            os.close(fd)  # Close immediately, we'll let playwright write to it
+            os.close(fd)  # Close immediately, playwright will write to this path
             return filepath
         except Exception as e:
             logger.debug(f"Could not create temp path: {e}")
-            # Fallback to /tmp with timestamp
-            import time
-            return f"/tmp/{prefix}_{int(time.time())}_{random.randint(1000, 9999)}{suffix}"
+            # Fallback to /tmp with larger random range for better security
+            timestamp = int(time.time() * 1000)  # millisecond precision
+            random_part = random.randint(100000, 999999)
+            return f"/tmp/{prefix}_{timestamp}_{random_part}{suffix}"
     
     
     
@@ -1715,7 +1713,7 @@ class FragmentAutomation:
                             text = await btn.text_content()
                             if text and text.strip():
                                 logger.debug(f"Button {i}: '{text.strip()}'")
-                        except:
+                        except Exception:
                             pass
                 except Exception as e:
                     logger.debug(f"Could not enumerate buttons: {e}")
@@ -1876,7 +1874,7 @@ class FragmentAutomation:
                                 phone_input_detected = True
                                 logger.info(f"Phone input detected with selector: {selector}")
                                 break
-                        except:
+                        except Exception:
                             continue
                     
                     if phone_input_detected:
