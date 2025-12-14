@@ -248,6 +248,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order_id = data.split("_", 1)[1]
         await cancel_order(query, order_id)
     
+    # Order details
+    elif data.startswith("order_detail_"):
+        order_id = data.split("_", 2)[2]
+        await show_order_details(query, order_id)
+    
+    # Order pagination
+    elif data.startswith("orders_page_"):
+        page = int(data.split("_")[2])
+        await show_user_orders(query, user, page)
+    
     # Admin panel
     elif data == "admin_panel":
         await show_admin_panel(query, user)
@@ -258,8 +268,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "admin_stats":
         await show_admin_stats(query, user)
     
+    elif data == "admin_stats_orders":
+        await show_admin_stats_orders(query, user)
+    
+    elif data == "admin_stats_income":
+        await show_admin_stats_income(query, user)
+    
+    elif data == "admin_stats_users":
+        await show_admin_stats_users(query, user)
+    
     elif data == "admin_login":
         await admin_login(query, user)
+    
+    elif data == "admin_prices":
+        await show_admin_prices(query, user)
+    
+    elif data == "admin_orders":
+        await show_admin_orders(query, user)
     
     # Back navigation
     elif data == "back_to_buy":
@@ -271,6 +296,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             messages.get_cancel_message(),
             reply_markup=keyboards.get_back_to_main_keyboard()
         )
+    
+    # Unknown callback
+    else:
+        logger.warning(f"Unknown callback data: {data}")
+        await query.answer("⚠️ 此功能暂未实现", show_alert=True)
 
 # ============================================================================
 # MENU DISPLAY FUNCTIONS
@@ -561,7 +591,12 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         bio.seek(0)
         
         # Add gift recipient info to message
-        gift_info = f"\n🎁 **赠送给**：{'@' + recipient_username if recipient_username else recipient_id}\n"
+        if recipient_username:
+            gift_info = f"\n🎁 **赠送给**：@{recipient_username}\n"
+        elif recipient_id:
+            gift_info = f"\n🎁 **赠送给**：User ID {recipient_id}\n"
+        else:
+            gift_info = ""
         
         message = messages.get_payment_message(
             order_id=order_id,
@@ -570,7 +605,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             wallet_address=config.PAYMENT_WALLET_ADDRESS,
             expires_in_minutes=30
         )
-        message = message.replace("💳 **付款信息**", f"{gift_info}\n💳 **付款信息**")
+        if gift_info:
+            message = message.replace("💳 **付款信息**", f"{gift_info}\n💳 **付款信息**")
         
         keyboard = keyboards.get_payment_keyboard(order_id)
         
@@ -884,6 +920,202 @@ async def admin_login(query, user):
         await query.message.reply_text("✅ Fragment 登录成功！")
     else:
         await query.message.reply_text("❌ Fragment 登录失败\n\n请检查日志获取更多信息")
+
+async def show_order_details(query, order_id: str):
+    """Show detailed order information"""
+    order = db.get_order(order_id)
+    
+    if not order:
+        await query.answer("❌ 订单不存在", show_alert=True)
+        return
+    
+    # Check if user owns this order or is admin
+    if order['user_id'] != query.from_user.id and not is_admin(query.from_user.id):
+        await query.answer("❌ 您没有权限查看此订单", show_alert=True)
+        return
+    
+    # Get user info for display
+    user = db.get_user(order['user_id'])
+    order['username'] = user.get('username') if user else None
+    
+    message = messages.get_order_details_message(order)
+    keyboard = keyboards.get_back_to_main_keyboard()
+    
+    await query.edit_message_text(
+        message,
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+
+async def show_admin_stats_orders(query, user):
+    """Show admin order statistics"""
+    if not is_admin(user.id):
+        await query.answer("❌ 您没有权限", show_alert=True)
+        return
+    
+    stats = db.get_order_statistics()
+    
+    message = f"""
+📊 **订单统计详情**
+━━━━━━━━━━━━━━
+
+📦 总订单数：**{stats['total']}**
+⏳ 待支付：{stats['pending']}
+💰 已支付：{stats['paid']}
+✅ 已完成：{stats['completed']}
+❌ 失败/取消：{stats['failed']}
+
+📈 成功率：**{stats['success_rate']:.1f}%**
+
+━━━━━━━━━━━━━━
+💡 提示：成功率 = 已完成 / 总订单数
+"""
+    
+    keyboard = keyboards.get_admin_stats_keyboard()
+    await query.edit_message_text(
+        message,
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+
+async def show_admin_stats_income(query, user):
+    """Show admin income statistics"""
+    if not is_admin(user.id):
+        await query.answer("❌ 您没有权限", show_alert=True)
+        return
+    
+    stats = db.get_income_statistics()
+    
+    message = f"""
+💰 **收入统计详情**
+━━━━━━━━━━━━━━
+
+📅 今日收入：**${stats['today']:.2f} USDT**
+📅 本周收入：**${stats['week']:.2f} USDT**
+📅 本月收入：**${stats['month']:.2f} USDT**
+
+━━━━━━━━━━━━━━
+💵 总收入：**${stats['total']:.2f} USDT**
+
+━━━━━━━━━━━━━━
+💡 提示：统计基于已完成的订单
+"""
+    
+    keyboard = keyboards.get_admin_stats_keyboard()
+    await query.edit_message_text(
+        message,
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+
+async def show_admin_stats_users(query, user):
+    """Show admin user statistics"""
+    if not is_admin(user.id):
+        await query.answer("❌ 您没有权限", show_alert=True)
+        return
+    
+    stats = db.get_user_count_statistics()
+    
+    message = f"""
+👥 **用户统计详情**
+━━━━━━━━━━━━━━
+
+👤 总用户数：**{stats['total']}**
+🆕 今日新增：{stats['today']}
+⭐ 活跃用户：{stats['active']}
+
+━━━━━━━━━━━━━━
+📊 活跃率：**{(stats['active']/stats['total']*100 if stats['total'] > 0 else 0):.1f}%**
+
+━━━━━━━━━━━━━━
+💡 提示：活跃用户 = 有已完成订单的用户
+"""
+    
+    keyboard = keyboards.get_admin_stats_keyboard()
+    await query.edit_message_text(
+        message,
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+
+async def show_admin_prices(query, user):
+    """Show admin price management"""
+    if not is_admin(user.id):
+        await query.answer("❌ 您没有权限", show_alert=True)
+        return
+    
+    premium_prices = db.get_prices()
+    stars_prices = db.get_stars_prices()
+    
+    message = f"""
+💵 **价格管理**
+━━━━━━━━━━━━━━
+
+💎 **Premium 会员价格**
+• 3个月：${premium_prices[3]:.2f} USDT
+• 6个月：${premium_prices[6]:.2f} USDT
+• 12个月：${premium_prices[12]:.2f} USDT
+
+⭐ **Stars 价格**
+• 100 Stars：${stars_prices[100]:.2f} USDT
+• 250 Stars：${stars_prices[250]:.2f} USDT
+• 500 Stars：${stars_prices[500]:.2f} USDT
+• 1000 Stars：${stars_prices[1000]:.2f} USDT
+• 2500 Stars：${stars_prices[2500]:.2f} USDT
+
+━━━━━━━━━━━━━━
+💡 使用命令修改价格：
+/setprice <月数> <价格>
+例如：/setprice 3 5.99
+"""
+    
+    keyboard = keyboards.get_admin_panel_keyboard()
+    await query.edit_message_text(
+        message,
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+
+async def show_admin_orders(query, user):
+    """Show admin order management"""
+    if not is_admin(user.id):
+        await query.answer("❌ 您没有权限", show_alert=True)
+        return
+    
+    # Get recent orders
+    all_orders = list(db.orders.find().sort('created_at', -1).limit(10))
+    
+    if not all_orders:
+        message = "📋 暂无订单"
+    else:
+        message = "📋 **最近10个订单**\n━━━━━━━━━━━━━━\n\n"
+        
+        from constants import ORDER_STATUS_EMOJI
+        
+        for order in all_orders:
+            status_emoji = ORDER_STATUS_EMOJI.get(order.get('status', 'pending'), '❓')
+            product_name = utils.get_product_name(
+                order.get('product_type', PRODUCT_TYPE_PREMIUM),
+                months=order.get('months'),
+                stars=order.get('product_quantity')
+            )
+            
+            user_info = db.get_user(order['user_id'])
+            username = f"@{user_info.get('username')}" if user_info and user_info.get('username') else f"ID:{order['user_id']}"
+            
+            created_time = order['created_at'].strftime('%m-%d %H:%M')
+            
+            message += f"{status_emoji} **{product_name}**\n"
+            message += f"   👤 {username} | 💰 ${order['price']:.2f}\n"
+            message += f"   🆔 `{order['order_id'][:16]}...`\n"
+            message += f"   🕐 {created_time}\n\n"
+    
+    keyboard = keyboards.get_admin_panel_keyboard()
+    await query.edit_message_text(
+        message,
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
 
 # ============================================================================
 # ERROR HANDLER

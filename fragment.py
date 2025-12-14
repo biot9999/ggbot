@@ -103,8 +103,8 @@ class FragmentAutomation:
                     try:
                         await self.page.screenshot(path='/tmp/fragment_login_error.png')
                         logger.info("Screenshot saved to /tmp/fragment_login_error.png")
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Could not save screenshot: {e}")
                     return False
             
             # Wait for QR code or login completion
@@ -144,8 +144,8 @@ class FragmentAutomation:
                 try:
                     await self.page.screenshot(path='/tmp/fragment_login_timeout.png')
                     logger.info("Screenshot saved to /tmp/fragment_login_timeout.png")
-                except:
-                    pass
+                except Exception as screenshot_error:
+                    logger.debug(f"Could not save screenshot: {screenshot_error}")
                 return False
                 
         except Exception as e:
@@ -155,8 +155,8 @@ class FragmentAutomation:
                 if self.page:
                     await self.page.screenshot(path='/tmp/fragment_login_exception.png')
                     logger.info("Screenshot saved to /tmp/fragment_login_exception.png")
-            except:
-                pass
+            except Exception as screenshot_error:
+                logger.debug(f"Could not save screenshot: {screenshot_error}")
             return False
         finally:
             # Don't close browser immediately, keep it for session
