@@ -242,7 +242,14 @@ class FragmentAutomation:
     async def gift_premium(self, user_id: int, months: int, max_retries: int = 3):
         """
         Gift Telegram Premium to a user with retry mechanism
-        Returns True if successful
+        
+        Args:
+            user_id: Telegram user ID of the recipient
+            months: Number of months (3, 6, or 12)
+            max_retries: Maximum number of retry attempts (default: 3)
+            
+        Returns:
+            True if successful, False otherwise
         """
         for attempt in range(max_retries):
             try:

@@ -86,7 +86,8 @@ def get_date_range(period: str) -> tuple:
         start = now - timedelta(days=30)
         end = now
     else:  # 'all'
-        start = datetime.min  # Use Python's minimum datetime
+        # Use a reasonable past date that won't cause timezone issues
+        start = datetime(2020, 1, 1)
         end = now
     
     return start, end

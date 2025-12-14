@@ -221,6 +221,11 @@ def get_order_details_message(order):
 🎁 **赠送信息**
 • 赠送给：@{order['recipient_username']}
 """
+    elif order.get('recipient_id'):
+        message += f"""
+🎁 **赠送信息**
+• 赠送给：User ID {order['recipient_id']}
+"""
     
     if status == 'completed' and order.get('completed_at'):
         completed_time = order['completed_at'].strftime('%Y-%m-%d %H:%M:%S')

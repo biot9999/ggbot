@@ -693,7 +693,7 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                     if order.get('recipient_username'):
                         success_msg += f"🎁 已赠送给：@{order['recipient_username']}\n"
                     elif order.get('recipient_id') and order.get('recipient_id') != user_id:
-                        success_msg += f"🎁 已赠送给：{order['recipient_id']}\n"
+                        success_msg += f"🎁 已赠送给：User ID {order['recipient_id']}\n"
                     
                     success_msg += f"\n📝 交易哈希：`{tx_hash}`\n\n感谢您的购买！"
                     
