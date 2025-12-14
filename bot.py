@@ -802,8 +802,8 @@ async def fetch_recipient_info(bot, user_id=None, username=None):
         try:
             photos = await bot.get_user_profile_photos(chat.id, limit=1)
             if photos.total_count > 0:
-                # Get the smallest photo for display
-                photo = photos.photos[0][-1]  # Last one is smallest
+                # Get the first photo (smallest size)
+                photo = photos.photos[0][0]
                 info['photo_file_id'] = photo.file_id
         except Exception as e:
             logger.debug(f"Could not get profile photo: {e}")

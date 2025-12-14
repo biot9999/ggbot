@@ -426,7 +426,7 @@ def get_gift_confirmation_message(recipient_info, months, price):
     # Recipient information
     message += "**收礼人信息：**\n"
     
-    if recipient_info.get('photo_url'):
+    if recipient_info.get('photo_file_id'):
         message += f"📷 头像：已获取\n"
     
     if recipient_info.get('first_name') or recipient_info.get('last_name'):
