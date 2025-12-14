@@ -114,7 +114,8 @@ class TronPayment:
                         # Check amount (convert from smallest unit)
                         tx_amount = float(tx.get('value', 0)) / (10 ** tx.get('token_info', {}).get('decimals', 6))
                         
-                        if abs(tx_amount - amount) < 0.01:  # Allow small difference
+                        # Use tight tolerance for unique amounts (0.00001 = 1/100 of smallest increment)
+                        if abs(tx_amount - amount) < 0.00001:
                             logger.info(f"Payment found: {tx.get('transaction_id')}")
                             return {
                                 'tx_hash': tx.get('transaction_id'),

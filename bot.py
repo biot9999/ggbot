@@ -1143,13 +1143,13 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                     await bot.send_message(
                         chat_id=chat_id,
                         text=f"✅ 充值成功！\n\n"
-                             f"💰 充值金额：${order['price']:.2f} USDT\n"
-                             f"💳 当前余额：${new_balance:.2f} USDT\n"
+                             f"💰 充值金额：${order['price']:.4f} USDT\n"
+                             f"💳 当前余额：${new_balance:.4f} USDT\n"
                              f"📝 交易哈希：`{tx_hash}`\n\n"
                              f"余额可用于购买会员和星星！",
                         parse_mode='Markdown'
                     )
-                    utils.log_order_action(order_id, "Completed", f"Recharge ${order['price']:.2f}")
+                    utils.log_order_action(order_id, "Completed", f"Recharge ${order['price']:.4f}")
                 else:
                     db.update_order_status(order_id, 'failed')
                     await bot.send_message(
@@ -1262,8 +1262,8 @@ async def verify_payment(query, order_id: str):
                             db.update_order_status(order_id, 'completed')
                             await query.message.reply_text(
                                 f"✅ 充值成功！\n\n"
-                                f"💰 充值金额：${order['price']:.2f} USDT\n"
-                                f"💳 当前余额：${new_balance:.2f} USDT\n\n"
+                                f"💰 充值金额：${order['price']:.4f} USDT\n"
+                                f"💳 当前余额：${new_balance:.4f} USDT\n\n"
                                 f"余额可用于购买会员和星星！"
                             )
                         else:
