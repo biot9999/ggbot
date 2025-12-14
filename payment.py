@@ -34,8 +34,27 @@ class TronPayment:
                     if response.status == 200:
                         data = await response.json()
                         return data.get('data', [])
+                    elif response.status == 401:
+                        logger.error(
+                            "TronGrid API 401 Unauthorized - API Key invalid or missing. "
+                            "Please check TRONGRID_API_KEY in config. "
+                            "You can get a free API key at https://www.trongrid.io/"
+                        )
+                        return None
+                    elif response.status == 403:
+                        logger.error(
+                            "TronGrid API 403 Forbidden - API Key may have exceeded rate limits "
+                            "or lacks required permissions"
+                        )
+                        return None
+                    elif response.status == 429:
+                        logger.warning(
+                            "TronGrid API 429 Too Many Requests - Rate limit exceeded. "
+                            "Consider upgrading your API key or reducing request frequency"
+                        )
+                        return None
                     else:
-                        logger.error(f"Failed to get transactions: {response.status}")
+                        logger.error(f"Failed to get transactions: HTTP {response.status}")
                         return None
         except Exception as e:
             logger.error(f"Error getting transactions: {e}")
@@ -51,8 +70,13 @@ class TronPayment:
                     if response.status == 200:
                         data = await response.json()
                         return data
+                    elif response.status == 401:
+                        logger.error(
+                            "TronGrid API 401 Unauthorized - API Key invalid or missing"
+                        )
+                        return None
                     else:
-                        logger.error(f"Failed to verify transaction: {response.status}")
+                        logger.error(f"Failed to verify transaction: HTTP {response.status}")
                         return None
         except Exception as e:
             logger.error(f"Error verifying transaction: {e}")

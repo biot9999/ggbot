@@ -7,6 +7,27 @@ import config
 
 logger = logging.getLogger(__name__)
 
+def check_playwright_dependencies():
+    """
+    Check if Playwright dependencies are installed
+    
+    Returns:
+        tuple: (success: bool, error_type: str or None)
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            browser.close()
+        return True, None
+    except Exception as e:
+        error_str = str(e).lower()
+        if "missing dependencies" in error_str or "host system" in error_str:
+            return False, "missing_deps"
+        elif "executable" in error_str or "browser" in error_str:
+            return False, "missing_browser"
+        return False, str(e)
+
 class FragmentAutomation:
     def __init__(self):
         self.session_file = config.FRAGMENT_SESSION_FILE

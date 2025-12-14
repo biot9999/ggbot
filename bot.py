@@ -167,6 +167,42 @@ async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ 您没有权限使用此命令")
         return
     
+    # Check Playwright dependencies
+    deps_ok, error_type = fragment.check_playwright_dependencies()
+    if not deps_ok:
+        if error_type == "missing_deps":
+            await update.message.reply_text(
+                "❌ **系统缺少浏览器依赖**\n\n"
+                "📋 请在服务器上执行以下命令安装依赖：\n\n"
+                "**方法 1（推荐）：**\n"
+                "`playwright install-deps`\n\n"
+                "**方法 2（Ubuntu/Debian）：**\n"
+                "`apt-get install -y libnss3 libnspr4 libatk1.0-0 "
+                "libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 "
+                "libxcomposite1 libxdamage1 libxfixes3 libxrandr2 "
+                "libgbm1 libpango-1.0-0 libcairo2 libasound2`\n\n"
+                "安装完成后重试 /login",
+                parse_mode='Markdown'
+            )
+            return
+        elif error_type == "missing_browser":
+            await update.message.reply_text(
+                "❌ **浏览器未安装**\n\n"
+                "📋 请在服务器上执行以下命令：\n\n"
+                "`playwright install chromium`\n\n"
+                "安装完成后重试 /login",
+                parse_mode='Markdown'
+            )
+            return
+        else:
+            await update.message.reply_text(
+                f"❌ 检测依赖时出错\n\n"
+                f"错误信息：`{error_type[:200]}`\n\n"
+                f"请检查 Playwright 安装是否正确",
+                parse_mode='Markdown'
+            )
+            return
+    
     await update.message.reply_text(
         "🔐 开始 Fragment 登录流程...\n\n"
         "这需要在服务器上打开浏览器并扫描二维码。\n"
@@ -467,7 +503,8 @@ async def show_purchase_type(query, months):
 async def handle_self_purchase(query, user, months):
     """Handle purchase for self"""
     prices = db.get_prices()
-    price = prices[months]
+    base_price = prices[months]
+    price = utils.generate_unique_price(base_price)
     
     # Create order
     order_id = str(uuid.uuid4())
@@ -483,7 +520,7 @@ async def handle_self_purchase(query, user, months):
     
     await send_payment_info(query, order_id, product_name, price, user.id)
     
-    utils.log_order_action(order_id, "Created", f"User {user.id}, {months} months, ${price}")
+    utils.log_order_action(order_id, "Created", f"User {user.id}, {months} months, ${price:.4f}")
 
 async def handle_gift_purchase_start(query, user, months):
     """Start gift purchase flow - ask for recipient"""
@@ -515,7 +552,8 @@ async def handle_gift_purchase_start(query, user, months):
 async def handle_stars_purchase(query, user, stars):
     """Handle stars purchase"""
     prices = db.get_stars_prices()
-    price = prices.get(stars, stars * 0.01)
+    base_price = prices.get(stars, stars * 0.01)
+    price = utils.generate_unique_price(base_price)
     
     # Create order
     order_id = str(uuid.uuid4())
@@ -532,7 +570,7 @@ async def handle_stars_purchase(query, user, stars):
     
     await send_payment_info(query, order_id, product_name, price, user.id)
     
-    utils.log_order_action(order_id, "Created", f"User {user.id}, {stars} stars, ${price}")
+    utils.log_order_action(order_id, "Created", f"User {user.id}, {stars} stars, ${price:.4f}")
 
 async def handle_gift_confirmation(query, user, order_data):
     """Handle gift purchase confirmation"""
@@ -553,7 +591,8 @@ async def handle_gift_confirmation(query, user, order_data):
             return
         
         state_data = user_state.get('data', {})
-        price = state_data.get('price')
+        base_price = state_data.get('price')
+        price = utils.generate_unique_price(base_price)
         
         # Create order
         order_id = str(uuid.uuid4())
@@ -651,15 +690,16 @@ async def handle_recharge_confirmation(query, user, amount):
             await query.answer("❌ 会话已过期，请重新开始", show_alert=True)
             return
         
-        # Create recharge order
+        # Create recharge order with unique amount
         order_id = str(uuid.uuid4())
-        product_name = f"余额充值 ${amount:.2f}"
+        price = utils.generate_unique_price(amount)
+        product_name = f"余额充值 ${price:.4f}"
         
         db.create_order(
             order_id=order_id,
             user_id=user.id,
             months=0,
-            price=amount,
+            price=price,
             product_type=PRODUCT_TYPE_RECHARGE
         )
         
@@ -680,7 +720,7 @@ async def handle_recharge_confirmation(query, user, amount):
         message = messages.get_payment_message(
             order_id=order_id,
             product_name=product_name,
-            price=amount,
+            price=price,
             wallet_address=config.PAYMENT_WALLET_ADDRESS,
             expires_in_minutes=30
         )
@@ -697,10 +737,10 @@ async def handle_recharge_confirmation(query, user, amount):
         # Start payment monitoring
         bot_instance = query.get_bot()
         asyncio.create_task(
-            monitor_payment(bot_instance, order_id, user.id, amount, query.message.chat_id)
+            monitor_payment(bot_instance, order_id, user.id, price, query.message.chat_id)
         )
         
-        utils.log_order_action(order_id, "Recharge order created", f"Amount: ${amount:.2f}")
+        utils.log_order_action(order_id, "Recharge order created", f"Amount: ${price:.4f}")
         
         # Edit original message
         try:
@@ -853,19 +893,57 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         recipient_id = recipient_info['value'] if recipient_info['type'] == 'user_id' else None
         recipient_username = recipient_info['value'] if recipient_info['type'] == 'username' else None
         
+        # If username provided, explain Bot API limitations
+        if recipient_username and not recipient_id:
+            await update.message.reply_text(
+                "⚠️ **关于 Username 验证的说明**\n\n"
+                "由于 Telegram Bot API 限制，我们无法直接通过 @username 获取用户信息。\n\n"
+                "**请选择以下任一方式：**\n\n"
+                "1️⃣ **转发对方的消息**（推荐）\n"
+                "   • 转发对方的任意消息给我\n"
+                "   • 我可以从转发消息中获取准确的用户 ID\n\n"
+                "2️⃣ **获取对方的 User ID**\n"
+                "   • 让对方发送 /start 给 @userinfobot\n"
+                "   • 获取数字 ID 后发送给我\n\n"
+                "3️⃣ **让对方先使用本 Bot**\n"
+                "   • 让对方发送 /start 给本 Bot\n"
+                "   • 之后重新输入 @username\n\n"
+                "或点击取消按钮取消操作",
+                reply_markup=keyboards.get_cancel_keyboard(),
+                parse_mode='Markdown'
+            )
+            return
+        
         # Fetch user information from Telegram
         fetched_info = await fetch_recipient_info(context.bot, recipient_id, recipient_username)
         
         if fetched_info is None:
+            error_msg = "❌ 无法获取收礼人信息\n\n"
+            if recipient_id:
+                error_msg += (
+                    "**可能的原因：**\n"
+                    "• User ID 不正确\n"
+                    "• 该用户尚未与 Bot 交互\n"
+                    "• 用户隐私设置限制\n\n"
+                    "**解决方法：**\n"
+                    "• 让对方先发送 /start 给本 Bot\n"
+                    "• 确认 User ID 是否正确\n"
+                    "• 或尝试转发对方的消息给我\n\n"
+                )
+            else:
+                error_msg += (
+                    "**可能的原因：**\n"
+                    "• 用户名拼写错误\n"
+                    "• 该用户尚未与 Bot 交互\n"
+                    "• 用户隐私设置限制\n\n"
+                )
+            
+            error_msg += "请检查后重新输入，或点击取消按钮"
+            
             await update.message.reply_text(
-                "❌ 无法获取收礼人信息\n\n"
-                "可能的原因：\n"
-                "• 用户不存在\n"
-                "• 用户名拼写错误\n"
-                "• 用户 ID 不正确\n"
-                "• 用户隐私设置限制\n\n"
-                "请检查后重新输入，或点击取消按钮",
-                reply_markup=keyboards.get_cancel_keyboard()
+                error_msg,
+                reply_markup=keyboards.get_cancel_keyboard(),
+                parse_mode='Markdown'
             )
             return
         
@@ -1119,10 +1197,11 @@ async def verify_payment(query, order_id: str):
         
         if transactions:
             for tx in transactions:
-                # Check if amount matches
+                # Check if amount matches (precise to 4 decimals)
                 tx_amount = float(tx.get('value', 0)) / (10 ** tx.get('token_info', {}).get('decimals', 6))
                 
-                if abs(tx_amount - order['price']) < 0.01:
+                # Use tighter tolerance for unique amounts (0.00001 = 1/100 of smallest increment)
+                if abs(tx_amount - order['price']) < 0.00001:
                     tx_hash = tx.get('transaction_id')
                     
                     # Check if transaction already recorded
@@ -1211,7 +1290,15 @@ async def verify_payment(query, order_id: str):
 async def cancel_order(query, order_id: str):
     """Cancel an order"""
     db.update_order_status(order_id, 'cancelled')
-    await query.edit_message_text(
+    
+    # Delete original message (payment info is sent as photo, can't use edit_message_text)
+    try:
+        await query.message.delete()
+    except Exception as e:
+        logger.debug(f"Could not delete message: {e}")
+    
+    # Send new cancellation message
+    await query.message.reply_text(
         "❌ 订单已取消\n\n使用 /start 返回主菜单",
         reply_markup=keyboards.get_back_to_main_keyboard()
     )

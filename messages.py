@@ -143,8 +143,8 @@ def get_payment_message(order_id, product_name, price, wallet_address, expires_i
 `{order_id}`
 
 📦 商品：{product_name}
-💰 订单金额：${price:.2f} USDT
-💵 实付金额：${price:.2f} USDT
+💰 订单金额：${price:.4f} USDT
+💵 实付金额：${price:.4f} USDT
 
 ━━━━━━━━━━━━━━
 💳 **付款信息**
@@ -158,7 +158,7 @@ def get_payment_message(order_id, product_name, price, wallet_address, expires_i
 ⚠️ **重要提示**
 
 1️⃣ 请确保使用 **TRC20 网络** 转账
-2️⃣ 请转账准确金额：**${price:.2f} USDT**
+2️⃣ 请转账准确金额：**${price:.4f} USDT**（包含所有小数位）
 3️⃣ 转账后点击 "✅ 我已支付" 按钮
 4️⃣ 系统将自动验证并开通
 5️⃣ 订单有效期：**{expires_in_minutes} 分钟**

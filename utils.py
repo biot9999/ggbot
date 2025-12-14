@@ -1,6 +1,7 @@
 """Utility functions for the bot"""
 
 import logging
+import random
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 
@@ -101,6 +102,21 @@ def truncate_string(text: str, max_length: int = 50, suffix: str = "...") -> str
 def format_currency(amount: float) -> str:
     """Format currency amount"""
     return f"${amount:.2f}"
+
+def generate_unique_price(base_price: float) -> float:
+    """
+    Generate unique payment amount by adding small random decimal
+    Adds 0.0001-0.0099 to avoid payment confusion when multiple users pay same amount
+    
+    Args:
+        base_price: Base price in USDT
+    
+    Returns:
+        Unique price with 4 decimal places
+    """
+    random_cents = random.randint(1, 99) / 10000  # 0.0001 to 0.0099
+    unique_price = base_price + random_cents
+    return round(unique_price, 4)
 
 def parse_recipient_input(input_text: str) -> Dict[str, Optional[str]]:
     """Parse recipient input (username or user ID)
