@@ -21,7 +21,7 @@ from fragment import fragment
 import keyboards
 import messages
 import utils
-from constants import ORDER_STATUS, PRODUCT_TYPE_PREMIUM, PRODUCT_TYPE_STARS
+from constants import ORDER_STATUS, PRODUCT_TYPE_PREMIUM, PRODUCT_TYPE_STARS, PRODUCT_TYPE_RECHARGE
 
 # Configure logging
 logging.basicConfig(
@@ -174,18 +174,45 @@ async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⏳ 请等待，这可能需要几分钟..."
     )
     
-    success = await fragment.login_with_telegram()
-    
-    if success:
-        await update.message.reply_text("✅ Fragment 登录成功！")
-    else:
+    try:
+        success = await fragment.login_with_telegram()
+        
+        if success:
+            await update.message.reply_text("✅ Fragment 登录成功！")
+        else:
+            await update.message.reply_text(
+                "❌ **Fragment 登录失败**\n\n"
+                "**可能的原因：**\n"
+                "1️⃣ 未在 2 分钟内扫描二维码\n"
+                "2️⃣ 网络连接不稳定或超时\n"
+                "3️⃣ Fragment.com 页面结构已更新\n"
+                "4️⃣ Playwright 浏览器启动失败\n\n"
+                "**排查步骤：**\n"
+                "• 检查服务器网络连接\n"
+                "• 确认 Playwright 浏览器已正确安装\n"
+                "• 查看日志文件获取详细错误信息\n"
+                "• 检查 /tmp 目录下的截图文件：\n"
+                "  - fragment_login_error.png\n"
+                "  - fragment_login_timeout.png\n"
+                "  - fragment_login_exception.png\n\n"
+                "**日志位置：**\n"
+                "使用命令查看日志：`journalctl -u telegram-premium-bot -n 50`\n\n"
+                "如果问题持续，请重启服务后重试。",
+                parse_mode='Markdown'
+            )
+    except Exception as e:
+        logger.error(f"Exception in login_command: {e}", exc_info=True)
         await update.message.reply_text(
-            "❌ Fragment 登录失败\n\n"
-            "可能的原因：\n"
-            "• 未及时扫描二维码\n"
-            "• 网络连接问题\n"
-            "• Fragment 页面结构变化\n\n"
-            "请重试或查看日志获取更多信息"
+            f"❌ **登录过程中发生异常**\n\n"
+            f"**错误类型：** {type(e).__name__}\n"
+            f"**错误信息：** {str(e)}\n\n"
+            f"**建议操作：**\n"
+            f"• 检查服务器资源（内存、CPU）\n"
+            f"• 确认 Playwright 依赖已安装：\n"
+            f"  `python -m playwright install chromium`\n"
+            f"• 查看完整日志获取更多信息\n"
+            f"• 如果是网络问题，请检查防火墙设置",
+            parse_mode='Markdown'
         )
 
 # ============================================================================
@@ -238,6 +265,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("buy_stars_"):
         stars = int(data.split("_")[2])
         await handle_stars_purchase(query, user, stars)
+    
+    # Gift confirmation flow
+    elif data.startswith("confirm_gift_"):
+        order_data = data.split("_", 2)[2]
+        await handle_gift_confirmation(query, user, order_data)
+    
+    elif data == "cancel_gift":
+        await handle_gift_cancellation(query, user)
+    
+    # Recharge confirmation flow
+    elif data.startswith("confirm_recharge_"):
+        amount_str = data.split("_", 2)[2]
+        await handle_recharge_confirmation(query, user, float(amount_str))
+    
+    elif data == "cancel_recharge":
+        await handle_recharge_cancellation(query, user)
     
     # Payment actions
     elif data.startswith("paid_"):
@@ -383,9 +426,19 @@ async def show_user_orders(query, user, page=1):
     )
 
 async def show_recharge(query):
-    """Show recharge page (feature under development)"""
+    """Show recharge page"""
+    user = query.from_user
+    
+    # Get current balance
+    balance = db.get_user_balance(user.id)
+    
     message = messages.get_recharge_message()
-    keyboard = keyboards.get_back_to_main_keyboard()
+    message = f"💰 当前余额：${balance:.2f} USDT\n\n" + message
+    
+    keyboard = keyboards.get_cancel_keyboard()
+    
+    # Set user state to awaiting recharge amount
+    db.set_user_state(user.id, 'awaiting_recharge_amount', {})
     
     await query.edit_message_text(
         message,
@@ -481,6 +534,198 @@ async def handle_stars_purchase(query, user, stars):
     
     utils.log_order_action(order_id, "Created", f"User {user.id}, {stars} stars, ${price}")
 
+async def handle_gift_confirmation(query, user, order_data):
+    """Handle gift purchase confirmation"""
+    import json
+    import base64
+    
+    try:
+        # Decode order data
+        order_dict = json.loads(base64.b64decode(order_data).decode())
+        months = order_dict['months']
+        recipient_id = order_dict.get('recipient_id')
+        recipient_username = order_dict.get('recipient_username')
+        
+        # Get user state to verify
+        user_state = db.get_user_state(user.id)
+        if not user_state or user_state.get('state') != 'confirm_recipient':
+            await query.answer("❌ 会话已过期，请重新开始", show_alert=True)
+            return
+        
+        state_data = user_state.get('data', {})
+        price = state_data.get('price')
+        
+        # Create order
+        order_id = str(uuid.uuid4())
+        product_name = utils.get_product_name(PRODUCT_TYPE_PREMIUM, months=months)
+        
+        db.create_order(
+            order_id=order_id,
+            user_id=user.id,
+            months=months,
+            price=price,
+            product_type=PRODUCT_TYPE_PREMIUM,
+            recipient_id=recipient_id,
+            recipient_username=recipient_username
+        )
+        
+        # Clear state
+        db.clear_user_state(user.id)
+        
+        # Generate QR code and send payment info
+        payment_text = config.PAYMENT_WALLET_ADDRESS
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(payment_text)
+        qr.make(fit=True)
+        
+        img = qr.make_image(fill_color="black", back_color="white")
+        bio = io.BytesIO()
+        img.save(bio, 'PNG')
+        bio.seek(0)
+        
+        # Add gift recipient info to message
+        if recipient_username:
+            gift_info = f"\n🎁 **赠送给**：@{recipient_username}\n"
+        elif recipient_id:
+            gift_info = f"\n🎁 **赠送给**：User ID {recipient_id}\n"
+        else:
+            gift_info = ""
+        
+        message = messages.get_payment_message(
+            order_id=order_id,
+            product_name=product_name,
+            price=price,
+            wallet_address=config.PAYMENT_WALLET_ADDRESS,
+            expires_in_minutes=30
+        )
+        if gift_info:
+            message = message.replace("💳 **付款信息**", f"{gift_info}\n💳 **付款信息**")
+        
+        keyboard = keyboards.get_payment_keyboard(order_id)
+        
+        await query.message.reply_photo(
+            photo=bio,
+            caption=message,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        
+        # Start payment monitoring
+        bot_instance = query.get_bot()
+        asyncio.create_task(
+            monitor_payment(bot_instance, order_id, user.id, price, query.message.chat_id)
+        )
+        
+        utils.log_order_action(order_id, "Gift order confirmed", f"Recipient: {recipient_username or recipient_id}")
+        
+        # Edit original message to show confirmation
+        try:
+            await query.edit_message_text("✅ 已确认，请查看下方支付信息")
+        except Exception as e:
+            logger.debug(f"Could not edit message: {e}")
+            
+    except Exception as e:
+        logger.error(f"Error in handle_gift_confirmation: {e}")
+        await query.answer("❌ 处理失败，请重试", show_alert=True)
+
+async def handle_gift_cancellation(query, user):
+    """Handle gift purchase cancellation"""
+    db.clear_user_state(user.id)
+    
+    message = "❌ 已取消赠送操作\n\n使用 /start 返回主菜单"
+    keyboard = keyboards.get_back_to_main_keyboard()
+    
+    try:
+        await query.edit_message_text(message, reply_markup=keyboard)
+    except Exception:
+        await query.message.reply_text(message, reply_markup=keyboard)
+    
+    utils.log_user_action(user.id, "Gift cancelled")
+
+async def handle_recharge_confirmation(query, user, amount):
+    """Handle recharge confirmation"""
+    try:
+        # Verify user state
+        user_state = db.get_user_state(user.id)
+        if not user_state or user_state.get('state') != 'confirm_recharge':
+            await query.answer("❌ 会话已过期，请重新开始", show_alert=True)
+            return
+        
+        # Create recharge order
+        order_id = str(uuid.uuid4())
+        product_name = f"余额充值 ${amount:.2f}"
+        
+        db.create_order(
+            order_id=order_id,
+            user_id=user.id,
+            months=0,
+            price=amount,
+            product_type=PRODUCT_TYPE_RECHARGE
+        )
+        
+        # Clear state
+        db.clear_user_state(user.id)
+        
+        # Generate QR code and send payment info
+        payment_text = config.PAYMENT_WALLET_ADDRESS
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(payment_text)
+        qr.make(fit=True)
+        
+        img = qr.make_image(fill_color="black", back_color="white")
+        bio = io.BytesIO()
+        img.save(bio, 'PNG')
+        bio.seek(0)
+        
+        message = messages.get_payment_message(
+            order_id=order_id,
+            product_name=product_name,
+            price=amount,
+            wallet_address=config.PAYMENT_WALLET_ADDRESS,
+            expires_in_minutes=30
+        )
+        
+        keyboard = keyboards.get_payment_keyboard(order_id)
+        
+        await query.message.reply_photo(
+            photo=bio,
+            caption=message,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        
+        # Start payment monitoring
+        bot_instance = query.get_bot()
+        asyncio.create_task(
+            monitor_payment(bot_instance, order_id, user.id, amount, query.message.chat_id)
+        )
+        
+        utils.log_order_action(order_id, "Recharge order created", f"Amount: ${amount:.2f}")
+        
+        # Edit original message
+        try:
+            await query.edit_message_text("✅ 已确认，请查看下方支付信息")
+        except Exception as e:
+            logger.debug(f"Could not edit message: {e}")
+            
+    except Exception as e:
+        logger.error(f"Error in handle_recharge_confirmation: {e}")
+        await query.answer("❌ 处理失败，请重试", show_alert=True)
+
+async def handle_recharge_cancellation(query, user):
+    """Handle recharge cancellation"""
+    db.clear_user_state(user.id)
+    
+    message = "❌ 已取消充值操作\n\n使用 /start 返回主菜单"
+    keyboard = keyboards.get_back_to_main_keyboard()
+    
+    try:
+        await query.edit_message_text(message, reply_markup=keyboard)
+    except Exception:
+        await query.message.reply_text(message, reply_markup=keyboard)
+    
+    utils.log_user_action(user.id, "Recharge cancelled")
+
 async def send_payment_info(query, order_id, product_name, price, user_id):
     """Send payment information with QR code"""
     # Generate QR code
@@ -524,6 +769,52 @@ async def send_payment_info(query, order_id, product_name, price, user_id):
 # MESSAGE HANDLERS
 # ============================================================================
 
+async def fetch_recipient_info(bot, user_id=None, username=None):
+    """Fetch recipient information from Telegram API"""
+    try:
+        if user_id:
+            # Try to get user info by ID
+            try:
+                chat = await bot.get_chat(user_id)
+            except Exception as e:
+                logger.warning(f"Could not get chat for user_id {user_id}: {e}")
+                return None
+        elif username:
+            # Try to get user info by username
+            try:
+                # For username, we need to try getting the chat
+                chat = await bot.get_chat(f"@{username}")
+            except Exception as e:
+                logger.warning(f"Could not get chat for username @{username}: {e}")
+                return None
+        else:
+            return None
+        
+        # Extract user information
+        info = {
+            'user_id': chat.id,
+            'username': chat.username,
+            'first_name': chat.first_name,
+            'last_name': chat.last_name,
+        }
+        
+        # Try to get profile photo
+        try:
+            photos = await bot.get_user_profile_photos(chat.id, limit=1)
+            if photos.total_count > 0:
+                # Get the first photo (smallest size)
+                photo = photos.photos[0][0]
+                info['photo_file_id'] = photo.file_id
+        except Exception as e:
+            logger.debug(f"Could not get profile photo: {e}")
+            info['photo_file_id'] = None
+        
+        return info
+        
+    except Exception as e:
+        logger.error(f"Error fetching recipient info: {e}")
+        return None
+
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text messages (for recipient input, etc.)"""
     user = update.effective_user
@@ -554,76 +845,117 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             return
         
-        # Create gift order
+        # Try to fetch recipient information using Telegram API
         months = state_data.get('months')
         prices = db.get_prices()
         price = prices[months]
         
-        order_id = str(uuid.uuid4())
-        product_name = utils.get_product_name(PRODUCT_TYPE_PREMIUM, months=months)
-        
         recipient_id = recipient_info['value'] if recipient_info['type'] == 'user_id' else None
         recipient_username = recipient_info['value'] if recipient_info['type'] == 'username' else None
         
-        db.create_order(
-            order_id=order_id,
-            user_id=user.id,
-            months=months,
-            price=price,
-            product_type=PRODUCT_TYPE_PREMIUM,
-            recipient_id=recipient_id,
-            recipient_username=recipient_username
-        )
+        # Fetch user information from Telegram
+        fetched_info = await fetch_recipient_info(context.bot, recipient_id, recipient_username)
         
-        # Clear state
-        db.clear_user_state(user.id)
+        if fetched_info is None:
+            await update.message.reply_text(
+                "❌ 无法获取收礼人信息\n\n"
+                "可能的原因：\n"
+                "• 用户不存在\n"
+                "• 用户名拼写错误\n"
+                "• 用户 ID 不正确\n"
+                "• 用户隐私设置限制\n\n"
+                "请检查后重新输入，或点击取消按钮",
+                reply_markup=keyboards.get_cancel_keyboard()
+            )
+            return
         
-        # Show payment info
-        # Generate QR code
-        payment_text = config.PAYMENT_WALLET_ADDRESS
-        qr = qrcode.QRCode(version=1, box_size=10, border=5)
-        qr.add_data(payment_text)
-        qr.make(fit=True)
+        # Update state to confirm_recipient with all details
+        db.set_user_state(user.id, 'confirm_recipient', {
+            'months': months,
+            'price': price,
+            'recipient_id': fetched_info.get('user_id'),
+            'recipient_username': fetched_info.get('username'),
+            'recipient_info': fetched_info
+        })
         
-        img = qr.make_image(fill_color="black", back_color="white")
-        bio = io.BytesIO()
-        img.save(bio, 'PNG')
-        bio.seek(0)
+        # Show confirmation page
+        confirmation_message = messages.get_gift_confirmation_message(fetched_info, months, price)
         
-        # Add gift recipient info to message
-        if recipient_username:
-            gift_info = f"\n🎁 **赠送给**：@{recipient_username}\n"
-        elif recipient_id:
-            gift_info = f"\n🎁 **赠送给**：User ID {recipient_id}\n"
+        # Encode order data for callback
+        import json
+        import base64
+        order_data_dict = {
+            'months': months,
+            'recipient_id': fetched_info.get('user_id'),
+            'recipient_username': fetched_info.get('username')
+        }
+        order_data = base64.b64encode(json.dumps(order_data_dict).encode()).decode()
+        
+        keyboard = keyboards.get_gift_confirmation_keyboard(order_data)
+        
+        # If recipient has profile photo, send it with the message
+        if fetched_info.get('photo_file_id'):
+            try:
+                await update.message.reply_photo(
+                    photo=fetched_info['photo_file_id'],
+                    caption=confirmation_message,
+                    reply_markup=keyboard,
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                logger.warning(f"Could not send photo: {e}")
+                await update.message.reply_text(
+                    confirmation_message,
+                    reply_markup=keyboard,
+                    parse_mode='Markdown'
+                )
         else:
-            gift_info = ""
-        
-        message = messages.get_payment_message(
-            order_id=order_id,
-            product_name=product_name,
-            price=price,
-            wallet_address=config.PAYMENT_WALLET_ADDRESS,
-            expires_in_minutes=30
-        )
-        if gift_info:
-            message = message.replace("💳 **付款信息**", f"{gift_info}\n💳 **付款信息**")
-        
-        keyboard = keyboards.get_payment_keyboard(order_id)
-        
-        await update.message.reply_photo(
-            photo=bio,
-            caption=message,
-            reply_markup=keyboard,
-            parse_mode='Markdown'
-        )
-        
-        # Start payment monitoring
-        bot_instance = context.bot
-        asyncio.create_task(
-            monitor_payment(bot_instance, order_id, user.id, price, update.message.chat_id)
-        )
-        
-        utils.log_order_action(order_id, "Gift order created", f"Recipient: {text}")
+            await update.message.reply_text(
+                confirmation_message,
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
+    
+    elif state == 'awaiting_recharge_amount':
+        # User is providing recharge amount
+        try:
+            amount = float(text.strip())
+            
+            # Validate amount
+            if amount < 5:
+                await update.message.reply_text(
+                    "❌ 充值金额不能低于 5 USDT\n\n请重新输入",
+                    reply_markup=keyboards.get_cancel_keyboard()
+                )
+                return
+            
+            if amount > 1000:
+                await update.message.reply_text(
+                    "❌ 单次充值金额不能超过 1000 USDT\n\n请重新输入",
+                    reply_markup=keyboards.get_cancel_keyboard()
+                )
+                return
+            
+            # Update state to confirm recharge
+            db.set_user_state(user.id, 'confirm_recharge', {'amount': amount})
+            
+            # Show confirmation
+            confirmation_message = messages.get_recharge_confirmation_message(amount)
+            keyboard = keyboards.get_recharge_confirmation_keyboard(amount)
+            
+            await update.message.reply_text(
+                confirmation_message,
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
+            
+        except ValueError:
+            await update.message.reply_text(
+                "❌ 无效的金额格式\n\n"
+                "请输入数字金额（例如：10 或 50.5）\n"
+                "或点击取消按钮",
+                reply_markup=keyboards.get_cancel_keyboard()
+            )
 
 # ============================================================================
 # PAYMENT MONITORING
@@ -723,6 +1055,31 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                     parse_mode='Markdown'
                 )
                 utils.log_order_action(order_id, "Completed", f"{order['product_quantity']} stars")
+            
+            elif order['product_type'] == PRODUCT_TYPE_RECHARGE:
+                # Handle balance recharge
+                new_balance = db.update_user_balance(user_id, order['price'], operation='add')
+                
+                if new_balance is not None:
+                    db.update_order_status(order_id, 'completed')
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=f"✅ 充值成功！\n\n"
+                             f"💰 充值金额：${order['price']:.2f} USDT\n"
+                             f"💳 当前余额：${new_balance:.2f} USDT\n"
+                             f"📝 交易哈希：`{tx_hash}`\n\n"
+                             f"余额可用于购买会员和星星！",
+                        parse_mode='Markdown'
+                    )
+                    utils.log_order_action(order_id, "Completed", f"Recharge ${order['price']:.2f}")
+                else:
+                    db.update_order_status(order_id, 'failed')
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=f"⚠️ 支付已确认，但充值失败。\n请联系管理员处理，订单号：`{order_id}`",
+                        parse_mode='Markdown'
+                    )
+                    utils.log_order_action(order_id, "Failed", "Balance update failed")
         
         else:
             # Payment timeout
@@ -818,6 +1175,24 @@ async def verify_payment(query, order_id: str):
                         await query.message.reply_text(
                             f"✅ 支付验证成功！\n\n⭐ {order['product_quantity']} Stars 已充值！\n感谢您的购买！"
                         )
+                    elif order['product_type'] == PRODUCT_TYPE_RECHARGE:
+                        # Handle balance recharge
+                        new_balance = db.update_user_balance(order['user_id'], order['price'], operation='add')
+                        
+                        if new_balance is not None:
+                            db.update_order_status(order_id, 'completed')
+                            await query.message.reply_text(
+                                f"✅ 充值成功！\n\n"
+                                f"💰 充值金额：${order['price']:.2f} USDT\n"
+                                f"💳 当前余额：${new_balance:.2f} USDT\n\n"
+                                f"余额可用于购买会员和星星！"
+                            )
+                        else:
+                            db.update_order_status(order_id, 'failed')
+                            await query.message.reply_text(
+                                f"⚠️ 支付已确认，但充值失败。\n请联系管理员，订单号：`{order_id}`",
+                                parse_mode='Markdown'
+                            )
                     return
         
         await query.message.reply_text(
@@ -914,12 +1289,41 @@ async def admin_login(query, user):
         "⏳ 请等待，这可能需要几分钟..."
     )
     
-    success = await fragment.login_with_telegram()
-    
-    if success:
-        await query.message.reply_text("✅ Fragment 登录成功！")
-    else:
-        await query.message.reply_text("❌ Fragment 登录失败\n\n请检查日志获取更多信息")
+    try:
+        success = await fragment.login_with_telegram()
+        
+        if success:
+            await query.message.reply_text("✅ Fragment 登录成功！")
+        else:
+            await query.message.reply_text(
+                "❌ **Fragment 登录失败**\n\n"
+                "**可能的原因：**\n"
+                "1️⃣ 未在 2 分钟内扫描二维码\n"
+                "2️⃣ 网络连接不稳定或超时\n"
+                "3️⃣ Fragment.com 页面结构已更新\n"
+                "4️⃣ Playwright 浏览器启动失败\n\n"
+                "**排查步骤：**\n"
+                "• 检查服务器网络连接\n"
+                "• 确认 Playwright 浏览器已正确安装\n"
+                "• 查看日志文件获取详细错误信息\n"
+                "• 检查 /tmp 目录下的截图文件\n\n"
+                "**日志位置：**\n"
+                "使用命令查看日志：`journalctl -u telegram-premium-bot -n 50`\n\n"
+                "如果问题持续，请重启服务后重试。",
+                parse_mode='Markdown'
+            )
+    except Exception as e:
+        logger.error(f"Exception in admin_login: {e}", exc_info=True)
+        await query.message.reply_text(
+            f"❌ **登录过程中发生异常**\n\n"
+            f"**错误类型：** {type(e).__name__}\n"
+            f"**错误信息：** {str(e)}\n\n"
+            f"**建议操作：**\n"
+            f"• 检查服务器资源（内存、CPU）\n"
+            f"• 确认 Playwright 依赖已安装\n"
+            f"• 查看完整日志获取更多信息",
+            parse_mode='Markdown'
+        )
 
 async def show_order_details(query, order_id: str):
     """Show detailed order information"""
