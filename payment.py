@@ -1,6 +1,7 @@
 import aiohttp
 import asyncio
 import logging
+import time
 from typing import Optional, Dict
 import config
 
@@ -73,7 +74,7 @@ class TronPayment:
                                     f"You may have exceeded rate limits."
                                 )
                                 # Wait before retry
-                                await asyncio.sleep(2 ** attempt)
+                                await asyncio.sleep(min(2 ** attempt, 30))
                                 continue
                                 
                         elif response.status == 429:
@@ -129,7 +130,7 @@ class TronPayment:
                                 continue
                             else:
                                 logger.error(f"Free API also failed with status {response.status}")
-                                await asyncio.sleep(2 ** attempt)
+                                await asyncio.sleep(min(2 ** attempt, 30))
                                 continue
                         else:
                             logger.error(f"Failed to verify transaction: HTTP {response.status} - {response_text}")
@@ -149,7 +150,6 @@ class TronPayment:
         Monitor for incoming payment of specified amount
         Returns transaction details if payment found within timeout
         """
-        import time
         start_time = time.time()
         last_checked_timestamp = start_time * 1000  # Convert to milliseconds
         
