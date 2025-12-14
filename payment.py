@@ -3,7 +3,6 @@ import asyncio
 import logging
 from typing import Optional, Dict
 import config
-import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +77,7 @@ class TronPayment:
                                 continue
                                 
                         elif response.status == 429:
-                            wait_time = 2 ** attempt
+                            wait_time = min(2 ** attempt, 60)  # Cap at 60 seconds
                             logger.warning(
                                 f"TronGrid API 429 Too Many Requests - Rate limit exceeded. "
                                 f"Waiting {wait_time}s before retry {attempt+1}/{self.max_retries}"
@@ -90,10 +89,9 @@ class TronPayment:
                             return None
                             
             except Exception as e:
-                logger.error(f"Error getting transactions (attempt {attempt+1}/{self.max_retries}): {e}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
+                logger.error(f"Error getting transactions (attempt {attempt+1}/{self.max_retries}): {e}", exc_info=True)
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
+                    await asyncio.sleep(min(2 ** attempt, 30))
                 else:
                     return None
         
@@ -138,10 +136,9 @@ class TronPayment:
                             return None
                             
             except Exception as e:
-                logger.error(f"Error verifying transaction (attempt {attempt+1}/{self.max_retries}): {e}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
+                logger.error(f"Error verifying transaction (attempt {attempt+1}/{self.max_retries}): {e}", exc_info=True)
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
+                    await asyncio.sleep(min(2 ** attempt, 30))
                 else:
                     return None
         
@@ -203,8 +200,7 @@ class TronPayment:
                 await asyncio.sleep(config.PAYMENT_CHECK_INTERVAL)
                 
             except Exception as e:
-                logger.error(f"Error checking payment: {e}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
+                logger.error(f"Error checking payment: {e}", exc_info=True)
                 await asyncio.sleep(config.PAYMENT_CHECK_INTERVAL)
         
         logger.warning(f"Payment monitoring timeout after {timeout}s")
@@ -242,8 +238,7 @@ class TronPayment:
             return True
             
         except Exception as e:
-            logger.error(f"Error verifying USDT authenticity: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Error verifying USDT authenticity: {e}", exc_info=True)
             return False
     
     async def get_transaction_details(self, tx_hash: str) -> Optional[Dict]:
@@ -278,8 +273,7 @@ class TronPayment:
             return details
             
         except Exception as e:
-            logger.error(f"Error getting transaction details: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Error getting transaction details: {e}", exc_info=True)
             return None
 
 # Global payment instance

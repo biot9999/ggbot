@@ -1405,8 +1405,7 @@ async def verify_payment(query, order_id: str):
         )
         
     except Exception as e:
-        logger.error(f"Error verifying payment for order {order_id}: {e}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error(f"Error verifying payment for order {order_id}: {e}", exc_info=True)
         await query.message.reply_text(
             "❌ 验证过程出现错误\n\n"
             "可能的原因：\n"

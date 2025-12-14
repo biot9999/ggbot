@@ -3,7 +3,6 @@ import json
 import logging
 import re
 import aiohttp
-import traceback
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 import config
 
@@ -72,7 +71,7 @@ class FragmentAutomation:
             return None
         
         try:
-            base_url = "https://fragment.com/api"
+            base_url = config.FRAGMENT_API_URL
             url = f"{base_url}{endpoint}"
             headers = {
                 'Authorization': f'Bearer {self.api_token}',
@@ -107,8 +106,7 @@ class FragmentAutomation:
                             logger.error(f"Fragment API error: {response.status} - {response_text}")
                             return None
         except Exception as e:
-            logger.error(f"Fragment API request error: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Fragment API request error: {e}", exc_info=True)
             return None
     
     async def init_browser(self):
@@ -346,8 +344,7 @@ class FragmentAutomation:
             return None
             
         except Exception as e:
-            logger.error(f"Error getting balance: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Error getting balance: {e}", exc_info=True)
             return None
     
     async def gift_premium(self, user_id: int, months: int, max_retries: int = 3):

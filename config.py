@@ -18,6 +18,8 @@ PAYMENT_WALLET_ADDRESS = os.getenv('PAYMENT_WALLET_ADDRESS', '')
 
 # Fragment Configuration
 FRAGMENT_SESSION_FILE = os.getenv('FRAGMENT_SESSION_FILE', 'fragment_session.json')
+FRAGMENT_API_TOKEN = os.getenv('FRAGMENT_API_TOKEN', '')
+FRAGMENT_API_URL = os.getenv('FRAGMENT_API_URL', 'https://fragment.com/api')
 
 # Premium Package Prices (in USDT)
 PRICES = {
@@ -32,9 +34,6 @@ PAYMENT_CHECK_INTERVAL = int(os.getenv('PAYMENT_CHECK_INTERVAL', '30'))  # 30 se
 
 # TronGrid API URLs
 TRONGRID_API_URL = 'https://api.trongrid.io'
-
-# Fragment API Configuration
-FRAGMENT_API_TOKEN = os.getenv('FRAGMENT_API_TOKEN', '')
 
 # Logging Configuration
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
