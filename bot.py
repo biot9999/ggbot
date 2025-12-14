@@ -174,18 +174,45 @@ async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⏳ 请等待，这可能需要几分钟..."
     )
     
-    success = await fragment.login_with_telegram()
-    
-    if success:
-        await update.message.reply_text("✅ Fragment 登录成功！")
-    else:
+    try:
+        success = await fragment.login_with_telegram()
+        
+        if success:
+            await update.message.reply_text("✅ Fragment 登录成功！")
+        else:
+            await update.message.reply_text(
+                "❌ **Fragment 登录失败**\n\n"
+                "**可能的原因：**\n"
+                "1️⃣ 未在 2 分钟内扫描二维码\n"
+                "2️⃣ 网络连接不稳定或超时\n"
+                "3️⃣ Fragment.com 页面结构已更新\n"
+                "4️⃣ Playwright 浏览器启动失败\n\n"
+                "**排查步骤：**\n"
+                "• 检查服务器网络连接\n"
+                "• 确认 Playwright 浏览器已正确安装\n"
+                "• 查看日志文件获取详细错误信息\n"
+                "• 检查 /tmp 目录下的截图文件：\n"
+                "  - fragment_login_error.png\n"
+                "  - fragment_login_timeout.png\n"
+                "  - fragment_login_exception.png\n\n"
+                "**日志位置：**\n"
+                "使用命令查看日志：`journalctl -u telegram-premium-bot -n 50`\n\n"
+                "如果问题持续，请重启服务后重试。",
+                parse_mode='Markdown'
+            )
+    except Exception as e:
+        logger.error(f"Exception in login_command: {e}", exc_info=True)
         await update.message.reply_text(
-            "❌ Fragment 登录失败\n\n"
-            "可能的原因：\n"
-            "• 未及时扫描二维码\n"
-            "• 网络连接问题\n"
-            "• Fragment 页面结构变化\n\n"
-            "请重试或查看日志获取更多信息"
+            f"❌ **登录过程中发生异常**\n\n"
+            f"**错误类型：** {type(e).__name__}\n"
+            f"**错误信息：** {str(e)}\n\n"
+            f"**建议操作：**\n"
+            f"• 检查服务器资源（内存、CPU）\n"
+            f"• 确认 Playwright 依赖已安装：\n"
+            f"  `python -m playwright install chromium`\n"
+            f"• 查看完整日志获取更多信息\n"
+            f"• 如果是网络问题，请检查防火墙设置",
+            parse_mode='Markdown'
         )
 
 # ============================================================================
@@ -914,12 +941,41 @@ async def admin_login(query, user):
         "⏳ 请等待，这可能需要几分钟..."
     )
     
-    success = await fragment.login_with_telegram()
-    
-    if success:
-        await query.message.reply_text("✅ Fragment 登录成功！")
-    else:
-        await query.message.reply_text("❌ Fragment 登录失败\n\n请检查日志获取更多信息")
+    try:
+        success = await fragment.login_with_telegram()
+        
+        if success:
+            await query.message.reply_text("✅ Fragment 登录成功！")
+        else:
+            await query.message.reply_text(
+                "❌ **Fragment 登录失败**\n\n"
+                "**可能的原因：**\n"
+                "1️⃣ 未在 2 分钟内扫描二维码\n"
+                "2️⃣ 网络连接不稳定或超时\n"
+                "3️⃣ Fragment.com 页面结构已更新\n"
+                "4️⃣ Playwright 浏览器启动失败\n\n"
+                "**排查步骤：**\n"
+                "• 检查服务器网络连接\n"
+                "• 确认 Playwright 浏览器已正确安装\n"
+                "• 查看日志文件获取详细错误信息\n"
+                "• 检查 /tmp 目录下的截图文件\n\n"
+                "**日志位置：**\n"
+                "使用命令查看日志：`journalctl -u telegram-premium-bot -n 50`\n\n"
+                "如果问题持续，请重启服务后重试。",
+                parse_mode='Markdown'
+            )
+    except Exception as e:
+        logger.error(f"Exception in admin_login: {e}", exc_info=True)
+        await query.message.reply_text(
+            f"❌ **登录过程中发生异常**\n\n"
+            f"**错误类型：** {type(e).__name__}\n"
+            f"**错误信息：** {str(e)}\n\n"
+            f"**建议操作：**\n"
+            f"• 检查服务器资源（内存、CPU）\n"
+            f"• 确认 Playwright 依赖已安装\n"
+            f"• 查看完整日志获取更多信息",
+            parse_mode='Markdown'
+        )
 
 async def show_order_details(query, order_id: str):
     """Show detailed order information"""
