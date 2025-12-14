@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 import config
 
@@ -146,12 +147,11 @@ class FragmentAutomation:
             try:
                 balance_text = await self.page.text_content('.balance, .ton-balance, [class*="balance"]', timeout=5000)
                 # Parse balance from text
-                import re
                 match = re.search(r'([\d.]+)', balance_text)
                 if match:
                     return float(match.group(1))
-            except:
-                logger.warning("Could not find balance element")
+            except Exception as e:
+                logger.warning(f"Could not find balance element: {e}")
             
             return None
             

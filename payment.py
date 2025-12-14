@@ -63,10 +63,11 @@ class TronPayment:
         Monitor for incoming payment of specified amount
         Returns transaction details if payment found within timeout
         """
-        start_time = asyncio.get_event_loop().time()
+        import time
+        start_time = time.time()
         last_checked_timestamp = start_time * 1000  # Convert to milliseconds
         
-        while (asyncio.get_event_loop().time() - start_time) < timeout:
+        while (time.time() - start_time) < timeout:
             try:
                 transactions = await self.get_account_transactions(self.wallet_address)
                 

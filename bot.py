@@ -226,8 +226,8 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                 db.update_order_status(order_id, 'failed')
                 await bot.send_message(
                     chat_id=chat_id,
-                    text="⚠️ 支付已确认，但开通失败。\n"
-                         "请联系管理员处理，订单号：`{order_id}`",
+                    text=f"⚠️ 支付已确认，但开通失败。\n"
+                         f"请联系管理员处理，订单号：`{order_id}`",
                     parse_mode='Markdown'
                 )
         else:
@@ -311,8 +311,9 @@ async def verify_payment(query, order_id: str):
                     else:
                         db.update_order_status(order_id, 'failed')
                         await query.message.reply_text(
-                            "⚠️ 支付已确认，但开通失败。\n"
-                            f"请联系管理员，订单号：{order_id}"
+                            f"⚠️ 支付已确认，但开通失败。\n"
+                            f"请联系管理员，订单号：`{order_id}`",
+                            parse_mode='Markdown'
                         )
                     return
         
