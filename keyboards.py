@@ -123,3 +123,11 @@ def get_cancel_keyboard():
     """Cancel current operation button"""
     keyboard = [[InlineKeyboardButton("❌ 取消", callback_data="cancel_operation")]]
     return InlineKeyboardMarkup(keyboard)
+
+def get_gift_confirmation_keyboard(order_data):
+    """Gift confirmation keyboard with confirm and cancel buttons"""
+    keyboard = [
+        [InlineKeyboardButton("✅ 确认赠送", callback_data=f"confirm_gift_{order_data}")],
+        [InlineKeyboardButton("❌ 取消", callback_data="cancel_gift")]
+    ]
+    return InlineKeyboardMarkup(keyboard)

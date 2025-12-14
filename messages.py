@@ -384,3 +384,34 @@ def get_recharge_message():
 💡 提示：目前可以直接购买会员和星星
 无需预充值，支付后即时到账
 """
+
+def get_gift_confirmation_message(recipient_info, months, price):
+    """Gift confirmation message with recipient details"""
+    message = "🎁 **确认赠送信息**\n"
+    message += "━━━━━━━━━━━━━━\n\n"
+    
+    # Recipient information
+    message += "**收礼人信息：**\n"
+    
+    if recipient_info.get('photo_url'):
+        message += f"📷 头像：已获取\n"
+    
+    if recipient_info.get('first_name') or recipient_info.get('last_name'):
+        full_name = ' '.join(filter(None, [recipient_info.get('first_name'), recipient_info.get('last_name')]))
+        message += f"👤 姓名：{full_name}\n"
+    
+    if recipient_info.get('username'):
+        message += f"👤 用户名：@{recipient_info['username']}\n"
+    elif recipient_info.get('user_id'):
+        message += f"👤 User ID：`{recipient_info['user_id']}`\n"
+    
+    message += "\n━━━━━━━━━━━━━━\n"
+    message += "**赠送套餐：**\n"
+    message += f"💎 {months} 个月 Telegram Premium\n"
+    message += f"💰 价格：${price:.2f} USDT\n\n"
+    
+    message += "━━━━━━━━━━━━━━\n"
+    message += "⚠️ **请仔细核对收礼人信息**\n"
+    message += "确认无误后点击「确认赠送」继续支付\n"
+    
+    return message

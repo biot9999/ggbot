@@ -266,6 +266,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stars = int(data.split("_")[2])
         await handle_stars_purchase(query, user, stars)
     
+    # Gift confirmation flow
+    elif data.startswith("confirm_gift_"):
+        order_data = data.split("_", 2)[2]
+        await handle_gift_confirmation(query, user, order_data)
+    
+    elif data == "cancel_gift":
+        await handle_gift_cancellation(query, user)
+    
     # Payment actions
     elif data.startswith("paid_"):
         order_id = data.split("_", 1)[1]
@@ -508,6 +516,114 @@ async def handle_stars_purchase(query, user, stars):
     
     utils.log_order_action(order_id, "Created", f"User {user.id}, {stars} stars, ${price}")
 
+async def handle_gift_confirmation(query, user, order_data):
+    """Handle gift purchase confirmation"""
+    import json
+    import base64
+    
+    try:
+        # Decode order data
+        order_dict = json.loads(base64.b64decode(order_data).decode())
+        months = order_dict['months']
+        recipient_id = order_dict.get('recipient_id')
+        recipient_username = order_dict.get('recipient_username')
+        
+        # Get user state to verify
+        user_state = db.get_user_state(user.id)
+        if not user_state or user_state.get('state') != 'confirm_recipient':
+            await query.answer("❌ 会话已过期，请重新开始", show_alert=True)
+            return
+        
+        state_data = user_state.get('data', {})
+        price = state_data.get('price')
+        
+        # Create order
+        order_id = str(uuid.uuid4())
+        product_name = utils.get_product_name(PRODUCT_TYPE_PREMIUM, months=months)
+        
+        db.create_order(
+            order_id=order_id,
+            user_id=user.id,
+            months=months,
+            price=price,
+            product_type=PRODUCT_TYPE_PREMIUM,
+            recipient_id=recipient_id,
+            recipient_username=recipient_username
+        )
+        
+        # Clear state
+        db.clear_user_state(user.id)
+        
+        # Generate QR code and send payment info
+        payment_text = config.PAYMENT_WALLET_ADDRESS
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(payment_text)
+        qr.make(fit=True)
+        
+        img = qr.make_image(fill_color="black", back_color="white")
+        bio = io.BytesIO()
+        img.save(bio, 'PNG')
+        bio.seek(0)
+        
+        # Add gift recipient info to message
+        if recipient_username:
+            gift_info = f"\n🎁 **赠送给**：@{recipient_username}\n"
+        elif recipient_id:
+            gift_info = f"\n🎁 **赠送给**：User ID {recipient_id}\n"
+        else:
+            gift_info = ""
+        
+        message = messages.get_payment_message(
+            order_id=order_id,
+            product_name=product_name,
+            price=price,
+            wallet_address=config.PAYMENT_WALLET_ADDRESS,
+            expires_in_minutes=30
+        )
+        if gift_info:
+            message = message.replace("💳 **付款信息**", f"{gift_info}\n💳 **付款信息**")
+        
+        keyboard = keyboards.get_payment_keyboard(order_id)
+        
+        await query.message.reply_photo(
+            photo=bio,
+            caption=message,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        
+        # Start payment monitoring
+        bot_instance = query.get_bot()
+        asyncio.create_task(
+            monitor_payment(bot_instance, order_id, user.id, price, query.message.chat_id)
+        )
+        
+        utils.log_order_action(order_id, "Gift order confirmed", f"Recipient: {recipient_username or recipient_id}")
+        
+        # Edit original message to show confirmation
+        try:
+            await query.edit_message_text("✅ 已确认，请查看下方支付信息")
+        except Exception as e:
+            logger.debug(f"Could not edit message: {e}")
+            
+    except Exception as e:
+        logger.error(f"Error in handle_gift_confirmation: {e}")
+        await query.answer("❌ 处理失败，请重试", show_alert=True)
+
+async def handle_gift_cancellation(query, user):
+    """Handle gift purchase cancellation"""
+    db.clear_user_state(user.id)
+    
+    message = "❌ 已取消赠送操作\n\n使用 /start 返回主菜单"
+    keyboard = keyboards.get_back_to_main_keyboard()
+    
+    try:
+        await query.edit_message_text(message, reply_markup=keyboard)
+    except Exception:
+        await query.message.reply_text(message, reply_markup=keyboard)
+    
+    utils.log_user_action(user.id, "Gift cancelled")
+
 async def send_payment_info(query, order_id, product_name, price, user_id):
     """Send payment information with QR code"""
     # Generate QR code
@@ -551,6 +667,52 @@ async def send_payment_info(query, order_id, product_name, price, user_id):
 # MESSAGE HANDLERS
 # ============================================================================
 
+async def fetch_recipient_info(bot, user_id=None, username=None):
+    """Fetch recipient information from Telegram API"""
+    try:
+        if user_id:
+            # Try to get user info by ID
+            try:
+                chat = await bot.get_chat(user_id)
+            except Exception as e:
+                logger.warning(f"Could not get chat for user_id {user_id}: {e}")
+                return None
+        elif username:
+            # Try to get user info by username
+            try:
+                # For username, we need to try getting the chat
+                chat = await bot.get_chat(f"@{username}")
+            except Exception as e:
+                logger.warning(f"Could not get chat for username @{username}: {e}")
+                return None
+        else:
+            return None
+        
+        # Extract user information
+        info = {
+            'user_id': chat.id,
+            'username': chat.username,
+            'first_name': chat.first_name,
+            'last_name': chat.last_name,
+        }
+        
+        # Try to get profile photo
+        try:
+            photos = await bot.get_user_profile_photos(chat.id, limit=1)
+            if photos.total_count > 0:
+                # Get the smallest photo for display
+                photo = photos.photos[0][-1]  # Last one is smallest
+                info['photo_file_id'] = photo.file_id
+        except Exception as e:
+            logger.debug(f"Could not get profile photo: {e}")
+            info['photo_file_id'] = None
+        
+        return info
+        
+    except Exception as e:
+        logger.error(f"Error fetching recipient info: {e}")
+        return None
+
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text messages (for recipient input, etc.)"""
     user = update.effective_user
@@ -581,76 +743,76 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             return
         
-        # Create gift order
+        # Try to fetch recipient information using Telegram API
         months = state_data.get('months')
         prices = db.get_prices()
         price = prices[months]
         
-        order_id = str(uuid.uuid4())
-        product_name = utils.get_product_name(PRODUCT_TYPE_PREMIUM, months=months)
-        
         recipient_id = recipient_info['value'] if recipient_info['type'] == 'user_id' else None
         recipient_username = recipient_info['value'] if recipient_info['type'] == 'username' else None
         
-        db.create_order(
-            order_id=order_id,
-            user_id=user.id,
-            months=months,
-            price=price,
-            product_type=PRODUCT_TYPE_PREMIUM,
-            recipient_id=recipient_id,
-            recipient_username=recipient_username
-        )
+        # Fetch user information from Telegram
+        fetched_info = await fetch_recipient_info(context.bot, recipient_id, recipient_username)
         
-        # Clear state
-        db.clear_user_state(user.id)
+        if fetched_info is None:
+            await update.message.reply_text(
+                "❌ 无法获取收礼人信息\n\n"
+                "可能的原因：\n"
+                "• 用户不存在\n"
+                "• 用户名拼写错误\n"
+                "• 用户 ID 不正确\n"
+                "• 用户隐私设置限制\n\n"
+                "请检查后重新输入，或点击取消按钮",
+                reply_markup=keyboards.get_cancel_keyboard()
+            )
+            return
         
-        # Show payment info
-        # Generate QR code
-        payment_text = config.PAYMENT_WALLET_ADDRESS
-        qr = qrcode.QRCode(version=1, box_size=10, border=5)
-        qr.add_data(payment_text)
-        qr.make(fit=True)
+        # Update state to confirm_recipient with all details
+        db.set_user_state(user.id, 'confirm_recipient', {
+            'months': months,
+            'price': price,
+            'recipient_id': fetched_info.get('user_id'),
+            'recipient_username': fetched_info.get('username'),
+            'recipient_info': fetched_info
+        })
         
-        img = qr.make_image(fill_color="black", back_color="white")
-        bio = io.BytesIO()
-        img.save(bio, 'PNG')
-        bio.seek(0)
+        # Show confirmation page
+        confirmation_message = messages.get_gift_confirmation_message(fetched_info, months, price)
         
-        # Add gift recipient info to message
-        if recipient_username:
-            gift_info = f"\n🎁 **赠送给**：@{recipient_username}\n"
-        elif recipient_id:
-            gift_info = f"\n🎁 **赠送给**：User ID {recipient_id}\n"
+        # Encode order data for callback
+        import json
+        import base64
+        order_data_dict = {
+            'months': months,
+            'recipient_id': fetched_info.get('user_id'),
+            'recipient_username': fetched_info.get('username')
+        }
+        order_data = base64.b64encode(json.dumps(order_data_dict).encode()).decode()
+        
+        keyboard = keyboards.get_gift_confirmation_keyboard(order_data)
+        
+        # If recipient has profile photo, send it with the message
+        if fetched_info.get('photo_file_id'):
+            try:
+                await update.message.reply_photo(
+                    photo=fetched_info['photo_file_id'],
+                    caption=confirmation_message,
+                    reply_markup=keyboard,
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                logger.warning(f"Could not send photo: {e}")
+                await update.message.reply_text(
+                    confirmation_message,
+                    reply_markup=keyboard,
+                    parse_mode='Markdown'
+                )
         else:
-            gift_info = ""
-        
-        message = messages.get_payment_message(
-            order_id=order_id,
-            product_name=product_name,
-            price=price,
-            wallet_address=config.PAYMENT_WALLET_ADDRESS,
-            expires_in_minutes=30
-        )
-        if gift_info:
-            message = message.replace("💳 **付款信息**", f"{gift_info}\n💳 **付款信息**")
-        
-        keyboard = keyboards.get_payment_keyboard(order_id)
-        
-        await update.message.reply_photo(
-            photo=bio,
-            caption=message,
-            reply_markup=keyboard,
-            parse_mode='Markdown'
-        )
-        
-        # Start payment monitoring
-        bot_instance = context.bot
-        asyncio.create_task(
-            monitor_payment(bot_instance, order_id, user.id, price, update.message.chat_id)
-        )
-        
-        utils.log_order_action(order_id, "Gift order created", f"Recipient: {text}")
+            await update.message.reply_text(
+                confirmation_message,
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
 
 # ============================================================================
 # PAYMENT MONITORING
