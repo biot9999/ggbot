@@ -1656,23 +1656,19 @@ class FragmentAutomation:
         if not self.playwright:
             self.playwright = await async_playwright().start()
             
-            # Try to use Google Chrome first for better stability and dependency handling
+            # Use Playwright's bundled Chromium browser
             try:
-                self.browser = await self.playwright.chromium.launch(
-                    headless=True,
-                    channel='chrome',  # Use system-installed Google Chrome
-                    args=self.BROWSER_ARGS
-                )
-                logger.info("Using Google Chrome browser for Fragment automation")
-            except (PlaywrightTimeout, RuntimeError, OSError) as e:
-                # Fallback to Chromium if Chrome is not available
-                # Common errors: browser not found, launch failed, missing dependencies
-                logger.warning(f"Chrome not available, falling back to Chromium: {e}")
                 self.browser = await self.playwright.chromium.launch(
                     headless=True,
                     args=self.BROWSER_ARGS
                 )
                 logger.info("Using Chromium browser for Fragment automation")
+            except Exception as e:
+                error_msg = str(e)
+                if "Executable doesn't exist" in error_msg or "browser" in error_msg.lower():
+                    logger.error("❌ Chromium 未安装，请运行：playwright install chromium")
+                    raise RuntimeError("Chromium browser not installed. Please run: playwright install chromium") from e
+                raise
     
     async def load_session(self):
         """Load saved session"""
