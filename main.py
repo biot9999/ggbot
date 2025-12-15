@@ -2685,7 +2685,7 @@ async def handle_stars_purchase(query, user, stars):
         utils.log_order_action(order_id, "Created", f"User {user.id}, {stars} stars, ${price:.4f}")
 
 async def handle_gift_confirmation(query, user, order_data):
-    """Handle gift purchase confirmation"""
+    """Handle gift purchase confirmation with balance-first strategy"""
     import json
     import base64
     
@@ -2704,70 +2704,195 @@ async def handle_gift_confirmation(query, user, order_data):
         
         state_data = user_state.get('data', {})
         base_price = state_data.get('price')
-        price = utils.generate_unique_price(base_price)
+        
+        # Check user balance
+        user_balance = db.get_user_balance(user.id)
         
         # Create order
         order_id = str(uuid.uuid4())
         product_name = utils.get_product_name(PRODUCT_TYPE_PREMIUM, months=months)
         
-        db.create_order(
-            order_id=order_id,
-            user_id=user.id,
-            months=months,
-            price=price,
-            product_type=PRODUCT_TYPE_PREMIUM,
-            recipient_id=recipient_id,
-            recipient_username=recipient_username
-        )
-        
-        # Clear state
-        db.clear_user_state(user.id)
-        
-        # Generate QR code and send payment info
-        payment_text = config.PAYMENT_WALLET_ADDRESS
-        qr = qrcode.QRCode(version=1, box_size=10, border=5)
-        qr.add_data(payment_text)
-        qr.make(fit=True)
-        
-        img = qr.make_image(fill_color="black", back_color="white")
-        bio = io.BytesIO()
-        img.save(bio, 'PNG')
-        bio.seek(0)
-        
-        # Add gift recipient info to message
-        if recipient_username:
-            gift_info = f"\n🎁 **赠送给**：@{recipient_username}\n"
-        elif recipient_id:
-            gift_info = f"\n🎁 **赠送给**：User ID {recipient_id}\n"
+        if user_balance >= base_price:
+            # Full payment from balance
+            logger.info(f"User {user.id} has sufficient balance (${user_balance:.4f}) for ${base_price:.2f}")
+            
+            # Deduct balance immediately
+            new_balance = db.update_user_balance(user.id, base_price, operation='subtract')
+            
+            if new_balance is not None:
+                # Create order with balance payment
+                db.create_order(
+                    order_id=order_id,
+                    user_id=user.id,
+                    months=months,
+                    price=base_price,
+                    product_type=PRODUCT_TYPE_PREMIUM,
+                    recipient_id=recipient_id,
+                    recipient_username=recipient_username,
+                    balance_to_use=base_price,
+                    remaining_amount=0.0
+                )
+                
+                # Mark as paid immediately
+                db.update_order_status(order_id, 'paid')
+                
+                # Clear state
+                db.clear_user_state(user.id)
+                
+                # Send processing message
+                await query.edit_message_text(
+                    f"⚙️ 正在处理您的订单...\n\n"
+                    f"💰 已扣除余额：${base_price:.2f}\n"
+                    f"💳 剩余余额：${new_balance:.4f}"
+                )
+                
+                # Fulfill immediately
+                order = db.get_order(order_id)
+                bot_instance = query.get_bot()
+                success = await fulfill_order_immediately(bot_instance, order, user.id, query.message.chat_id)
+                
+                utils.log_order_action(order_id, "Created-BalancePaid", f"Gift to {recipient_username or recipient_id}, balance: ${base_price:.2f}")
+            else:
+                await query.answer("❌ 余额扣除失败，请重试", show_alert=True)
+                
+        elif user_balance > 0:
+            # Partial payment from balance
+            balance_to_use = user_balance
+            remaining_amount = base_price - balance_to_use
+            unique_remaining = utils.generate_unique_price(remaining_amount)
+            
+            logger.info(f"User {user.id} using partial balance: ${balance_to_use:.4f}, remaining: ${unique_remaining:.4f}")
+            
+            # Create order with partial balance (don't deduct yet)
+            db.create_order(
+                order_id=order_id,
+                user_id=user.id,
+                months=months,
+                price=base_price,
+                product_type=PRODUCT_TYPE_PREMIUM,
+                recipient_id=recipient_id,
+                recipient_username=recipient_username,
+                balance_to_use=balance_to_use,
+                remaining_amount=unique_remaining
+            )
+            
+            # Clear state
+            db.clear_user_state(user.id)
+            
+            # Generate QR code
+            payment_text = config.PAYMENT_WALLET_ADDRESS
+            qr = qrcode.QRCode(version=1, box_size=10, border=5)
+            qr.add_data(payment_text)
+            qr.make(fit=True)
+            
+            img = qr.make_image(fill_color="black", back_color="white")
+            bio = io.BytesIO()
+            img.save(bio, 'PNG')
+            bio.seek(0)
+            
+            # Add gift recipient info
+            if recipient_username:
+                gift_info = f"🎁 **赠送给**：@{recipient_username}\n"
+            elif recipient_id:
+                gift_info = f"🎁 **赠送给**：User ID {recipient_id}\n"
+            else:
+                gift_info = ""
+            
+            balance_info = f"💰 将使用余额：${balance_to_use:.4f}\n📊 需链上支付：${unique_remaining:.4f}"
+            
+            message = messages.get_payment_message(
+                order_id=order_id,
+                product_name=product_name,
+                price=unique_remaining,
+                wallet_address=config.PAYMENT_WALLET_ADDRESS,
+                expires_in_minutes=30
+            )
+            
+            # Combine gift info and balance info
+            combined_info = f"{gift_info}\n{balance_info}" if gift_info else balance_info
+            message = combined_info + "\n\n" + message
+            
+            keyboard = keyboards.get_payment_keyboard(order_id)
+            
+            await query.message.reply_photo(
+                photo=bio,
+                caption=message,
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
+            
+            # Start payment monitoring
+            bot_instance = query.get_bot()
+            asyncio.create_task(
+                monitor_payment(bot_instance, order_id, user.id, unique_remaining, query.message.chat_id)
+            )
+            
+            utils.log_order_action(order_id, "Created-PartialBalance", 
+                                  f"Gift to {recipient_username or recipient_id}, balance: ${balance_to_use:.4f}, remaining: ${unique_remaining:.4f}")
         else:
-            gift_info = ""
-        
-        message = messages.get_payment_message(
-            order_id=order_id,
-            product_name=product_name,
-            price=price,
-            wallet_address=config.PAYMENT_WALLET_ADDRESS,
-            expires_in_minutes=30
-        )
-        if gift_info:
-            message = message.replace("💳 **付款信息**", f"{gift_info}\n💳 **付款信息**")
-        
-        keyboard = keyboards.get_payment_keyboard(order_id)
-        
-        await query.message.reply_photo(
-            photo=bio,
-            caption=message,
-            reply_markup=keyboard,
-            parse_mode='Markdown'
-        )
-        
-        # Start payment monitoring
-        bot_instance = query.get_bot()
-        asyncio.create_task(
-            monitor_payment(bot_instance, order_id, user.id, price, query.message.chat_id)
-        )
-        
-        utils.log_order_action(order_id, "Gift order confirmed", f"Recipient: {recipient_username or recipient_id}")
+            # No balance, full payment on-chain
+            price = utils.generate_unique_price(base_price)
+            
+            db.create_order(
+                order_id=order_id,
+                user_id=user.id,
+                months=months,
+                price=price,
+                product_type=PRODUCT_TYPE_PREMIUM,
+                recipient_id=recipient_id,
+                recipient_username=recipient_username,
+                balance_to_use=0.0,
+                remaining_amount=price
+            )
+            
+            # Clear state
+            db.clear_user_state(user.id)
+            
+            # Generate QR code
+            payment_text = config.PAYMENT_WALLET_ADDRESS
+            qr = qrcode.QRCode(version=1, box_size=10, border=5)
+            qr.add_data(payment_text)
+            qr.make(fit=True)
+            
+            img = qr.make_image(fill_color="black", back_color="white")
+            bio = io.BytesIO()
+            img.save(bio, 'PNG')
+            bio.seek(0)
+            
+            # Add gift recipient info
+            if recipient_username:
+                gift_info = f"\n🎁 **赠送给**：@{recipient_username}\n"
+            elif recipient_id:
+                gift_info = f"\n🎁 **赠送给**：User ID {recipient_id}\n"
+            else:
+                gift_info = ""
+            
+            message = messages.get_payment_message(
+                order_id=order_id,
+                product_name=product_name,
+                price=price,
+                wallet_address=config.PAYMENT_WALLET_ADDRESS,
+                expires_in_minutes=30
+            )
+            if gift_info:
+                message = message.replace("💳 **付款信息**", f"{gift_info}\n💳 **付款信息**")
+            
+            keyboard = keyboards.get_payment_keyboard(order_id)
+            
+            await query.message.reply_photo(
+                photo=bio,
+                caption=message,
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
+            
+            # Start payment monitoring
+            bot_instance = query.get_bot()
+            asyncio.create_task(
+                monitor_payment(bot_instance, order_id, user.id, price, query.message.chat_id)
+            )
+            
+            utils.log_order_action(order_id, "Gift order confirmed", f"Recipient: {recipient_username or recipient_id}")
         
         # Edit original message to show confirmation
         try:
