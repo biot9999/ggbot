@@ -19,6 +19,8 @@ import json
 import re
 import aiohttp
 import time
+import tempfile
+import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 from pymongo import MongoClient
@@ -77,11 +79,6 @@ PREMIUM_PACKAGES = [3, 6, 12]
 
 # Stars package options (quantity)
 STARS_PACKAGES = [100, 250, 500, 1000, 2500]
-
-import logging
-import random
-from datetime import datetime, timedelta
-from typing import Optional, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -1523,19 +1520,16 @@ class TronPayment:
 
 # Global payment instance
 tron_payment = TronPayment()
-import json
-import logging
-import re
-import aiohttp
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
-
-logger = logging.getLogger(__name__)
 
 # ============================================================================
 # FRAGMENT MODULE (Fragment.com Integration)
 # ============================================================================
 
 class FragmentAutomation:
+    # Fragment URL constants
+    FRAGMENT_URLS = ['https://fragment.com', 'https://www.fragment.com']
+    FRAGMENT_BASE_PATHS = ['https://fragment.com/', 'https://www.fragment.com/']
+    
     def __init__(self):
         self.session_file = config.FRAGMENT_SESSION_FILE
         self.playwright = None
@@ -1609,118 +1603,404 @@ class FragmentAutomation:
             logger.error(f"Error saving session: {e}")
             return False
     
-    async def login_with_telegram(self):
+    @staticmethod
+    def _save_debug_file(content, prefix, suffix, mode='w'):
         """
-        Interactive login with Telegram
-        This requires manual QR code scanning
-        Returns True if login successful
+        Safely save debug files with random suffix to prevent symlink attacks
+        
+        Args:
+            content: Content to save (str or bytes)
+            prefix: File prefix (e.g., 'fragment_page')
+            suffix: File suffix (e.g., '.html' or '.png')
+            mode: File mode ('w' for text, 'wb' for binary)
+        
+        Returns:
+            Path to saved file or None if failed
         """
         try:
-            await self.init_browser()
-            
-            self.context = await self.browser.new_context(
-                viewport={'width': 1280, 'height': 720},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            )
-            self.page = await self.context.new_page()
-            
-            # Navigate to Fragment
-            logger.info("Navigating to Fragment.com...")
-            await self.page.goto('https://fragment.com', wait_until='networkidle', timeout=30000)
-            await asyncio.sleep(3)
-            
-            # Try to find and click login button with multiple selectors
-            login_clicked = False
-            login_selectors = [
-                'button:has-text("Log in")',
-                'a:has-text("Log in")',
-                '.tm-button:has-text("Log in")',
-                '[data-action="login"]'
-            ]
-            
-            for selector in login_selectors:
-                try:
-                    logger.info(f"Trying login selector: {selector}")
-                    await self.page.click(selector, timeout=3000)
-                    login_clicked = True
-                    logger.info("Login button clicked successfully")
-                    await asyncio.sleep(3)
-                    break
-                except Exception as e:
-                    logger.debug(f"Selector {selector} not found: {e}")
-                    continue
-            
-            if not login_clicked:
-                # Check if already logged in
-                content = await self.page.content()
-                if 'Balance' in content or 'My Items' in content:
-                    logger.info("Already logged in")
-                    await self.save_session(await self.context.cookies(), await self.context.storage_state())
-                    return True
-                else:
-                    logger.error("Could not find login button and not logged in")
-                    # Take screenshot for debugging
-                    try:
-                        await self.page.screenshot(path='/tmp/fragment_login_error.png')
-                        logger.info("Screenshot saved to /tmp/fragment_login_error.png")
-                    except Exception as e:
-                        logger.debug(f"Could not save screenshot: {e}")
-                    return False
-            
-            # Wait for QR code or login completion
-            logger.info("Waiting for login... Please scan QR code")
-            
-            # Wait for either successful login or timeout
+            # Create temp file with random suffix in /tmp
+            fd, filepath = tempfile.mkstemp(suffix=suffix, prefix=f"{prefix}_", dir='/tmp')
             try:
-                # Wait for navigation away from login page or success indicators
-                await self.page.wait_for_function(
-                    """() => {
-                        return document.body.innerText.includes('Balance') || 
-                               document.body.innerText.includes('My Items') ||
-                               window.location.href !== 'https://fragment.com/';
-                    }""",
-                    timeout=120000  # 2 minutes for QR scan
-                )
+                if mode == 'wb':
+                    os.write(fd, content)
+                else:
+                    os.write(fd, content.encode('utf-8'))
+            finally:
+                os.close(fd)
+            logger.info(f"Saved debug file to {filepath}")
+            return filepath
+        except Exception as e:
+            logger.debug(f"Could not save debug file: {e}")
+            return None
+    
+    @staticmethod
+    def _get_temp_path(prefix, suffix):
+        """
+        Get a temporary file path with random component to prevent symlink attacks
+        
+        Args:
+            prefix: File prefix (e.g., 'fragment_screenshot')
+            suffix: File suffix (e.g., '.png')
+        
+        Returns:
+            Path to temp file
+        """
+        try:
+            # Use mkstemp to create file securely, but note: playwright will overwrite it
+            # This is acceptable since we've claimed the filename already
+            fd, filepath = tempfile.mkstemp(suffix=suffix, prefix=f"{prefix}_", dir='/tmp')
+            os.close(fd)  # Close immediately, playwright will write to this path
+            return filepath
+        except Exception as e:
+            logger.debug(f"Could not create temp path: {e}")
+            # Fallback to /tmp with larger random range for better security
+            timestamp = int(time.time() * 1000)  # millisecond precision
+            random_part = random.randint(100000, 999999)
+            return f"/tmp/{prefix}_{timestamp}_{random_part}{suffix}"
+    
+    async def login_with_telegram(self, max_retries=2):
+        """
+        Interactive login with Telegram
+        Supports both QR code scanning and phone number login
+        Returns True if login successful
+        
+        Args:
+            max_retries: Maximum number of retry attempts (default: 2)
+        """
+        for retry_attempt in range(max_retries):
+            try:
+                if retry_attempt > 0:
+                    logger.info(f"Retry attempt {retry_attempt + 1}/{max_retries}")
+                    # Clear cookies and cache between retries
+                    if self.context:
+                        await self.context.clear_cookies()
+                    await asyncio.sleep(3)
                 
+                await self.init_browser()
+                
+                self.context = await self.browser.new_context(
+                    viewport={'width': 1280, 'height': 720},
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                )
+                self.page = await self.context.new_page()
+                
+                # Try both fragment.com and www.fragment.com
+                url = self.FRAGMENT_URLS[retry_attempt % len(self.FRAGMENT_URLS)]
+                
+                # Navigate to Fragment
+                logger.info(f"Navigating to {url}...")
+                await self.page.goto(url, wait_until='networkidle', timeout=30000)
+                current_url = self.page.url
+                logger.info(f"Current page URL: {current_url}")
                 await asyncio.sleep(3)
                 
-                # Verify login success
-                content = await self.page.content()
-                if 'Balance' in content or 'My Items' in content or 'Log out' in content:
-                    # Save session
-                    cookies = await self.context.cookies()
-                    storage_state = await self.context.storage_state()
-                    await self.save_session(cookies, storage_state)
-                    
-                    logger.info("Login successful!")
-                    return True
-                else:
-                    logger.warning("Login page changed but couldn't confirm success")
-                    return False
+                # Save initial page state for debugging
+                try:
+                    html_content = await self.page.content()
+                    self._save_debug_file(html_content, 'fragment_page_initial', '.html')
+                except Exception as e:
+                    logger.debug(f"Could not save HTML: {e}")
                 
+                # Log all clickable elements for debugging
+                try:
+                    buttons = await self.page.query_selector_all('button, a')
+                    logger.info(f"Found {len(buttons)} clickable elements on page")
+                    # Log first few button texts
+                    for i, btn in enumerate(buttons[:10]):
+                        try:
+                            text = await btn.text_content()
+                            if text and text.strip():
+                                logger.debug(f"Button {i}: '{text.strip()}'")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.debug(f"Could not enumerate buttons: {e}")
+                
+                # Try to find and click login button with extensive selectors
+                login_clicked = False
+                login_selectors = [
+                    # English text variations
+                    'button:has-text("Log in")',
+                    'button:has-text("Login")',
+                    'button:has-text("Sign in")',
+                    'a:has-text("Log in")',
+                    'a:has-text("Login")',
+                    'a:has-text("Sign in")',
+                    
+                    # CSS class patterns
+                    '.tm-button:has-text("Log in")',
+                    '.login-button',
+                    '.auth-button',
+                    '[class*="login"]',
+                    '[class*="auth"]',
+                    
+                    # Data attributes
+                    '[data-action="login"]',
+                    '[data-testid="login-button"]',
+                    '[data-testid="auth-button"]',
+                    
+                    # Chinese text variations
+                    'button:has-text("登录")',
+                    'a:has-text("登录")',
+                    
+                    # Russian text variations
+                    'button:has-text("Войти")',
+                    'a:has-text("Войти")',
+                ]
+                
+                for selector in login_selectors:
+                    try:
+                        logger.info(f"Trying login selector: {selector}")
+                        await self.page.click(selector, timeout=3000)
+                        login_clicked = True
+                        logger.info("Login button clicked successfully")
+                        await asyncio.sleep(3)
+                        logger.info(f"Current URL after click: {self.page.url}")
+                        break
+                    except Exception as e:
+                        logger.debug(f"Selector {selector} not found: {e}")
+                        continue
+                
+                # Try XPath selectors as fallback
+                if not login_clicked:
+                    xpath_selectors = [
+                        '//button[contains(text(), "Log")]',
+                        '//a[contains(text(), "Log")]',
+                        '//button[contains(text(), "登录")]',
+                        '//a[contains(text(), "登录")]',
+                        '//button[contains(@class, "login")]',
+                        '//a[contains(@class, "login")]',
+                    ]
+                    
+                    for xpath in xpath_selectors:
+                        try:
+                            logger.info(f"Trying XPath selector: {xpath}")
+                            element = await self.page.wait_for_selector(f'xpath={xpath}', timeout=3000)
+                            if element:
+                                await element.click()
+                                login_clicked = True
+                                logger.info("Login button clicked via XPath")
+                                await asyncio.sleep(3)
+                                logger.info(f"Current URL after XPath click: {self.page.url}")
+                                break
+                        except Exception as e:
+                            logger.debug(f"XPath {xpath} not found: {e}")
+                            continue
+                
+                if not login_clicked:
+                    # Check if already logged in
+                    content = await self.page.content()
+                    if 'Balance' in content or 'My Items' in content or 'Log out' in content:
+                        logger.info("Already logged in")
+                        await self.save_session(await self.context.cookies(), await self.context.storage_state())
+                        return True
+                    else:
+                        logger.error("Could not find login button and not logged in")
+                        # Save debugging info
+                        try:
+                            screenshot_path = self._get_temp_path('fragment_login_error', '.png')
+                            await self.page.screenshot(path=screenshot_path, full_page=True)
+                            logger.info(f"Screenshot saved to {screenshot_path}")
+                            
+                            html_content = await self.page.content()
+                            self._save_debug_file(html_content, 'fragment_page_error', '.html')
+                        except Exception as e:
+                            logger.debug(f"Could not save debug info: {e}")
+                        
+                        # Continue to next retry instead of returning False immediately
+                        if retry_attempt < max_retries - 1:
+                            continue
+                        return False
+                
+                # Take screenshot after login button clicked
+                try:
+                    screenshot_path = self._get_temp_path('fragment_after_login_click', '.png')
+                    await self.page.screenshot(path=screenshot_path)
+                    logger.info(f"Screenshot saved to {screenshot_path}")
+                except Exception as e:
+                    logger.debug(f"Could not save screenshot: {e}")
+                
+                # Check for QR code or phone login options
+                logger.info("Checking for QR code or phone login...")
+                await asyncio.sleep(2)
+                
+                # Try to detect QR code element
+                qr_detected = False
+                qr_selectors = [
+                    'canvas',  # QR codes often rendered on canvas
+                    '[class*="qr"]',
+                    '[class*="QR"]',
+                    'img[alt*="QR"]',
+                    '[data-testid="qr-code"]',
+                ]
+                
+                for selector in qr_selectors:
+                    try:
+                        qr_element = await self.page.wait_for_selector(selector, timeout=3000)
+                        if qr_element:
+                            qr_detected = True
+                            logger.info(f"QR code detected with selector: {selector}")
+                            # Take screenshot of QR code
+                            try:
+                                screenshot_path = self._get_temp_path('fragment_qr_code', '.png')
+                                await self.page.screenshot(path=screenshot_path)
+                                logger.info(f"QR code screenshot saved to {screenshot_path}")
+                            except Exception as e:
+                                logger.debug(f"Could not save QR screenshot: {e}")
+                            break
+                    except Exception as e:
+                        logger.debug(f"QR selector {selector} not found: {e}")
+                        continue
+                
+                if not qr_detected:
+                    logger.warning("QR code not detected, checking for phone login option...")
+                    # Check for phone number input
+                    phone_input_detected = False
+                    phone_selectors = [
+                        'input[type="tel"]',
+                        'input[placeholder*="phone"]',
+                        'input[placeholder*="Phone"]',
+                        'input[placeholder*="номер"]',
+                        'input[placeholder*="电话"]',
+                        '[data-testid="phone-input"]',
+                    ]
+                    
+                    for selector in phone_selectors:
+                        try:
+                            phone_element = await self.page.wait_for_selector(selector, timeout=2000)
+                            if phone_element:
+                                phone_input_detected = True
+                                logger.info(f"Phone input detected with selector: {selector}")
+                                break
+                        except Exception:
+                            continue
+                    
+                    if phone_input_detected:
+                        logger.info("Phone number login available as alternative to QR code")
+                
+                # Wait for QR code or phone login completion
+                logger.info("Waiting for login... Please scan QR code or use phone number login")
+                
+                # Wait for either successful login or timeout
+                try:
+                    # Wait for navigation away from login page or success indicators
+                    # Optimized: cache innerText and use efficient selectors
+                    # Note: cookie check only verifies presence, doesn't read value (secure)
+                    await self.page.wait_for_function(
+                        """() => {
+                            const text = document.body.innerText;
+                            const indicators = [
+                                text.includes('Balance'),
+                                text.includes('My Items'),
+                                text.includes('Log out') || text.includes('Logout'),
+                                document.cookie.includes('stel_token'),  // Only checks presence, not value
+                                window.location.pathname !== '/',
+                                document.querySelector('[class*="avatar"],[class*="profile"]') !== null
+                            ];
+                            return indicators.filter(Boolean).length >= 2;  // At least 2 indicators
+                        }""",
+                        timeout=180000  # 3 minutes for login (QR scan or phone confirmation)
+                    )
+                    
+                    await asyncio.sleep(3)
+                    
+                    # Verify login success with multiple indicators
+                    content = await self.page.content()
+                    current_url = self.page.url
+                    logger.info(f"Login completed, current URL: {current_url}")
+                    
+                    success_indicators = [
+                        'Balance' in content,
+                        'My Items' in content,
+                        'Log out' in content,
+                        'Logout' in content,
+                        current_url not in self.FRAGMENT_BASE_PATHS,
+                    ]
+                    
+                    success_count = sum(success_indicators)
+                    logger.info(f"Success indicators detected: {success_count}/5")
+                    
+                    if success_count >= 2:
+                        # Save session
+                        cookies = await self.context.cookies()
+                        storage_state = await self.context.storage_state()
+                        await self.save_session(cookies, storage_state)
+                        
+                        # Save success page for debugging
+                        try:
+                            screenshot_path = self._get_temp_path('fragment_login_success', '.png')
+                            await self.page.screenshot(path=screenshot_path)
+                            logger.info(f"Success screenshot saved to {screenshot_path}")
+                        except Exception as e:
+                            logger.debug(f"Could not save success screenshot: {e}")
+                        
+                        logger.info("Login successful!")
+                        return True
+                    else:
+                        logger.warning("Login page changed but couldn't confirm success with enough indicators")
+                        # Save uncertain state for debugging
+                        try:
+                            screenshot_path = self._get_temp_path('fragment_login_uncertain', '.png')
+                            await self.page.screenshot(path=screenshot_path, full_page=True)
+                            html_content = await self.page.content()
+                            self._save_debug_file(html_content, 'fragment_page_uncertain', '.html')
+                        except Exception as e:
+                            logger.debug(f"Could not save debug info: {e}")
+                        
+                        # Continue to next retry
+                        if retry_attempt < max_retries - 1:
+                            continue
+                        return False
+                    
+                except PlaywrightTimeout as e:
+                    logger.error(f"Login timeout after 3 minutes: {e}")
+                    # Take screenshot for debugging
+                    try:
+                        screenshot_path = self._get_temp_path('fragment_login_timeout', '.png')
+                        await self.page.screenshot(path=screenshot_path, full_page=True)
+                        logger.info(f"Timeout screenshot saved to {screenshot_path}")
+                        
+                        html_content = await self.page.content()
+                        self._save_debug_file(html_content, 'fragment_page_timeout', '.html')
+                    except Exception as screenshot_error:
+                        logger.debug(f"Could not save timeout debug info: {screenshot_error}")
+                    
+                    # Continue to next retry
+                    if retry_attempt < max_retries - 1:
+                        continue
+                    return False
+                except Exception as e:
+                    logger.error(f"Login error: {e}")
+                    # Continue to next retry
+                    if retry_attempt < max_retries - 1:
+                        continue
+                    return False
+                    
             except Exception as e:
-                logger.error(f"Login timeout or error: {e}")
+                logger.error(f"Error during login attempt {retry_attempt + 1}: {e}")
                 # Take screenshot for debugging
                 try:
-                    await self.page.screenshot(path='/tmp/fragment_login_timeout.png')
-                    logger.info("Screenshot saved to /tmp/fragment_login_timeout.png")
+                    if self.page:
+                        screenshot_path = self._get_temp_path(f'fragment_login_exception_{retry_attempt}', '.png')
+                        await self.page.screenshot(path=screenshot_path, full_page=True)
+                        logger.info(f"Exception screenshot saved to {screenshot_path}")
+                        
+                        html_content = await self.page.content()
+                        self._save_debug_file(html_content, f'fragment_page_exception_{retry_attempt}', '.html')
                 except Exception as screenshot_error:
-                    logger.debug(f"Could not save screenshot: {screenshot_error}")
-                return False
+                    logger.debug(f"Could not save exception debug info: {screenshot_error}")
                 
-        except Exception as e:
-            logger.error(f"Error during login: {e}")
-            # Take screenshot for debugging
-            try:
-                if self.page:
-                    await self.page.screenshot(path='/tmp/fragment_login_exception.png')
-                    logger.info("Screenshot saved to /tmp/fragment_login_exception.png")
-            except Exception as screenshot_error:
-                logger.debug(f"Could not save screenshot: {screenshot_error}")
-            return False
-        finally:
-            # Don't close browser immediately, keep it for session
-            pass
+                # Continue to next retry
+                if retry_attempt < max_retries - 1:
+                    continue
+                return False
+            finally:
+                # Don't close browser immediately, keep it for session
+                pass
+        
+        # All retries exhausted
+        logger.error(f"Login failed after {max_retries} attempts")
+        return False
     
     async def restore_session(self):
         """Restore a saved session"""
@@ -2201,7 +2481,9 @@ async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         "🔐 开始 Fragment 登录流程...\n\n"
-        "这需要在服务器上打开浏览器并扫描二维码。\n"
+        "登录方式：\n"
+        "• 📱 扫描二维码（推荐）\n"
+        "• 📞 或使用手机号码登录\n\n"
         "登录过程会保存 session，之后无需重复登录。\n\n"
         "⏳ 请等待，这可能需要几分钟..."
     )
@@ -2215,20 +2497,25 @@ async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "❌ **Fragment 登录失败**\n\n"
                 "**可能的原因：**\n"
-                "1️⃣ 未在 2 分钟内扫描二维码\n"
+                "1️⃣ 未在 3 分钟内完成登录（扫描二维码或手机号确认）\n"
                 "2️⃣ 网络连接不稳定或超时\n"
                 "3️⃣ Fragment.com 页面结构已更新\n"
                 "4️⃣ Playwright 浏览器启动失败\n\n"
+                "**登录方式：**\n"
+                "• 📱 扫描二维码登录\n"
+                "• 📞 使用手机号码登录\n\n"
                 "**排查步骤：**\n"
                 "• 检查服务器网络连接\n"
                 "• 确认 Playwright 浏览器已正确安装\n"
                 "• 查看日志文件获取详细错误信息\n"
-                "• 检查 /tmp 目录下的截图文件：\n"
-                "  - fragment_login_error.png\n"
-                "  - fragment_login_timeout.png\n"
-                "  - fragment_login_exception.png\n\n"
+                "• 检查 /tmp 目录下的调试文件：\n"
+                "  - fragment_page_initial.html（初始页面）\n"
+                "  - fragment_qr_code.png（二维码截图）\n"
+                "  - fragment_login_error.png（错误截图）\n"
+                "  - fragment_login_timeout.png（超时截图）\n"
+                "  - fragment_page_*.html（页面HTML）\n\n"
                 "**日志位置：**\n"
-                "使用命令查看日志：`journalctl -u telegram-premium-bot -n 50`\n\n"
+                "使用命令查看日志：`journalctl -u telegram-premium-bot -n 100`\n\n"
                 "如果问题持续，请重启服务后重试。",
                 parse_mode='Markdown'
             )
