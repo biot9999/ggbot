@@ -1530,10 +1530,11 @@ class TronPayment:
         return None
     
     async def verify_transaction(self, tx_hash: str) -> Optional[Dict]:
-        """Verify a specific transaction with retry logic"""
+        """Verify a specific transaction with retry logic using valid TronGrid endpoints"""
         for attempt in range(self.max_retries):
             try:
-                url = f"{self.api_url}/v1/transactions/{tx_hash}/info"
+                # Use the correct TronGrid API endpoint
+                url = f"{self.api_url}/v1/transactions/{tx_hash}"
                 headers = self._get_headers(use_api_key=True)
                 
                 logger.debug(f"TronGrid Verify TX Request - URL: {url}")
@@ -1553,6 +1554,16 @@ class TronPayment:
                             except Exception as e:
                                 logger.error(f"Error parsing transaction response: {e}")
                                 return None
+                        
+                        # Handle 5xx errors with retry
+                        elif response.status >= 500:
+                            wait_time = min(2 ** attempt, MAX_RETRY_BACKOFF)
+                            logger.warning(
+                                f"TronGrid API {response.status} - Server error. "
+                                f"Retrying in {wait_time}s (attempt {attempt+1}/{self.max_retries})"
+                            )
+                            await asyncio.sleep(wait_time)
+                            continue
                                 
                         elif self._should_fallback_to_free_api(response.status):
                             if not self.use_free_api:
@@ -1564,11 +1575,77 @@ class TronPayment:
                                 await asyncio.sleep(min(2 ** attempt, MAX_RETRY_BACKOFF))
                                 continue
                         else:
-                            logger.error(f"Failed to verify transaction: HTTP {response.status} - {response_text}")
+                            # For 404 and other client errors, don't retry
+                            logger.warning(f"Transaction details unavailable: HTTP {response.status}")
                             return None
                             
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                wait_time = min(2 ** attempt, MAX_RETRY_BACKOFF)
+                logger.warning(
+                    f"Network error verifying transaction (attempt {attempt+1}/{self.max_retries}): {e}. "
+                    f"Retrying in {wait_time}s"
+                )
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(wait_time)
+                else:
+                    return None
             except Exception as e:
                 logger.error(f"Error verifying transaction (attempt {attempt+1}/{self.max_retries}): {e}", exc_info=True)
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(min(2 ** attempt, MAX_RETRY_BACKOFF))
+                else:
+                    return None
+        
+        return None
+    
+    async def get_transaction_events(self, tx_hash: str) -> Optional[Dict]:
+        """
+        Get transaction events (including TRC20 transfers) as fallback
+        Uses /v1/transactions/{tx_hash}/events endpoint
+        """
+        for attempt in range(self.max_retries):
+            try:
+                url = f"{self.api_url}/v1/transactions/{tx_hash}/events"
+                headers = self._get_headers(use_api_key=True)
+                
+                logger.debug(f"TronGrid Events Request - URL: {url}")
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=headers) as response:
+                        if response.status == 200:
+                            try:
+                                data = await response.json()
+                                logger.info(f"Transaction events for {tx_hash[:8]}... fetched successfully")
+                                return data
+                            except Exception as e:
+                                logger.error(f"Error parsing events response: {e}")
+                                return None
+                        
+                        # Handle 5xx errors with retry
+                        elif response.status >= 500:
+                            wait_time = min(2 ** attempt, MAX_RETRY_BACKOFF)
+                            logger.warning(
+                                f"TronGrid Events API {response.status} - Server error. "
+                                f"Retrying in {wait_time}s (attempt {attempt+1}/{self.max_retries})"
+                            )
+                            await asyncio.sleep(wait_time)
+                            continue
+                        else:
+                            logger.warning(f"Transaction events unavailable: HTTP {response.status}")
+                            return None
+                            
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                wait_time = min(2 ** attempt, MAX_RETRY_BACKOFF)
+                logger.warning(
+                    f"Network error fetching events (attempt {attempt+1}/{self.max_retries}): {e}. "
+                    f"Retrying in {wait_time}s"
+                )
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(wait_time)
+                else:
+                    return None
+            except Exception as e:
+                logger.error(f"Error fetching events (attempt {attempt+1}/{self.max_retries}): {e}", exc_info=True)
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(min(2 ** attempt, MAX_RETRY_BACKOFF))
                 else:
@@ -1624,7 +1701,8 @@ class TronPayment:
                                 'amount': tx_amount,
                                 'from': tx.get('from'),
                                 'to': tx.get('to'),
-                                'timestamp': tx_timestamp
+                                'timestamp': tx_timestamp,
+                                'tx_data': tx  # Include full transaction data for authenticity verification
                             }
                 
                 # Wait before next check
@@ -1637,36 +1715,93 @@ class TronPayment:
         logger.warning(f"Payment monitoring timeout after {timeout}s")
         return None
     
-    async def verify_usdt_authenticity(self, tx_hash: str) -> bool:
+    async def verify_usdt_authenticity(self, tx_hash: str, tx_from_account_list: Optional[Dict] = None) -> bool:
         """
         Verify that the USDT transaction is real (not fake USDT)
         Checks if the token contract matches the official USDT TRC20 contract
+        
+        Args:
+            tx_hash: Transaction hash to verify
+            tx_from_account_list: Optional transaction data from account list for fallback validation
+            
+        Returns:
+            bool: True if authentic USDT, False otherwise
         """
         try:
             logger.debug(f"Verifying USDT authenticity for TX: {tx_hash}")
+            
+            # Try to get transaction details from TronGrid
             tx_info = await self.verify_transaction(tx_hash)
             
-            if not tx_info:
-                logger.warning(f"Could not fetch transaction info for {tx_hash}")
-                return False
+            if tx_info:
+                # Successfully got transaction details, extract contract info
+                trc20_transfers = tx_info.get('trc20_transfer', [])
+                
+                if trc20_transfers:
+                    contract_address = trc20_transfers[0].get('token_address', '')
+                    
+                    logger.debug(f"Transaction contract: {contract_address}, Official USDT: {self.usdt_contract}")
+                    
+                    # Verify it's the official USDT contract
+                    if contract_address.upper() != self.usdt_contract.upper():
+                        logger.warning(f"⚠️ Fake USDT detected! TX: {tx_hash}, Contract: {contract_address}")
+                        return False
+                    
+                    logger.info(f"✅ Authentic USDT verified for TX: {tx_hash}")
+                    return True
+                
+                # No TRC20 transfers in main response, try events endpoint
+                logger.debug(f"No TRC20 transfers in main response, trying events endpoint")
+                events_info = await self.get_transaction_events(tx_hash)
+                
+                if events_info and events_info.get('data'):
+                    # Look for Transfer events with USDT contract
+                    for event in events_info.get('data', []):
+                        if event.get('event_name') == 'Transfer':
+                            event_contract = event.get('contract_address', '')
+                            if event_contract.upper() == self.usdt_contract.upper():
+                                logger.info(f"✅ Authentic USDT verified via events for TX: {tx_hash}")
+                                return True
+                            elif event_contract:
+                                logger.warning(f"⚠️ Fake USDT detected! TX: {tx_hash}, Contract: {event_contract}")
+                                return False
             
-            # Extract contract address from transaction
-            trc20_transfers = tx_info.get('trc20_transfer', [])
-            if not trc20_transfers:
-                logger.warning(f"No TRC20 transfers found in transaction {tx_hash}")
-                return False
+            # Details API failed or unavailable - use relaxed validation if account list data available
+            if tx_from_account_list:
+                logger.info("Details API unavailable; using account list validation")
+                
+                # Check if transaction from account list has official USDT contract
+                token_info = tx_from_account_list.get('token_info', {})
+                contract_from_list = token_info.get('address', '')
+                
+                if contract_from_list.upper() == self.usdt_contract.upper():
+                    # Additional validation: check recipient and amount match expectations
+                    to_address = tx_from_account_list.get('to', '')
+                    
+                    if to_address.upper() == self.wallet_address.upper():
+                        logger.info(
+                            f"✅ Authentic USDT verified via account list for TX: {tx_hash}. "
+                            f"Contract matches official USDT and recipient is correct."
+                        )
+                        return True
+                    else:
+                        logger.warning(
+                            f"TX {tx_hash} has correct USDT contract but wrong recipient: {to_address} "
+                            f"(expected: {self.wallet_address})"
+                        )
+                        return False
+                else:
+                    logger.warning(
+                        f"⚠️ Fake USDT detected via account list! TX: {tx_hash}, Contract: {contract_from_list}"
+                    )
+                    return False
             
-            contract_address = trc20_transfers[0].get('token_address', '')
-            
-            logger.debug(f"Transaction contract: {contract_address}, Official USDT: {self.usdt_contract}")
-            
-            # Verify it's the official USDT contract
-            if contract_address.upper() != self.usdt_contract.upper():
-                logger.warning(f"⚠️ Fake USDT detected! TX: {tx_hash}, Contract: {contract_address}")
-                return False
-            
-            logger.info(f"✅ Authentic USDT verified for TX: {tx_hash}")
-            return True
+            # No way to verify - treat as invalid for safety
+            logger.warning(
+                f"Could not verify USDT authenticity for {tx_hash}. "
+                f"Details API unavailable and no account list data provided."
+            )
+            return False
             
         except Exception as e:
             logger.error(f"Error verifying USDT authenticity: {e}", exc_info=True)
@@ -3429,8 +3564,11 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
         if payment_info:
             tx_hash = payment_info['tx_hash']
             
-            # Verify USDT authenticity
-            is_authentic = await tron_payment.verify_usdt_authenticity(tx_hash)
+            # Verify USDT authenticity - pass transaction data for fallback validation
+            is_authentic = await tron_payment.verify_usdt_authenticity(
+                tx_hash, 
+                tx_from_account_list=payment_info.get('tx_data')
+            )
             
             if not is_authentic:
                 db.update_order_status(order_id, 'failed')
@@ -3679,9 +3817,9 @@ async def verify_payment(query, order_id: str):
                         logger.info(f"Transaction {tx_hash} already recorded")
                         continue
                     
-                    # Verify authenticity
+                    # Verify authenticity - pass transaction data for fallback validation
                     logger.debug(f"Verifying USDT authenticity for {tx_hash}")
-                    is_authentic = await tron_payment.verify_usdt_authenticity(tx_hash)
+                    is_authentic = await tron_payment.verify_usdt_authenticity(tx_hash, tx_from_account_list=tx)
                     if not is_authentic:
                         logger.warning(f"Fake USDT detected in transaction {tx_hash}")
                         await query.message.reply_text(
