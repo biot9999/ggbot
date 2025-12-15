@@ -36,12 +36,6 @@ source venv/bin/activate
 echo "📚 Installing dependencies..."
 pip install -r requirements.txt
 
-# Install Playwright browsers if needed
-if [ ! -d "$HOME/.cache/ms-playwright" ]; then
-    echo "🌐 Installing Playwright browsers..."
-    playwright install chromium
-fi
-
 # Start the bot
 echo "✅ Starting bot..."
 python main.py

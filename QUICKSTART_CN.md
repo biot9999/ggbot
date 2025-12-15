@@ -41,6 +41,11 @@ nano .env
 TELEGRAM_BOT_TOKEN=你的机器人Token
 ADMIN_USER_IDS=你的用户ID
 PAYMENT_WALLET_ADDRESS=你的TRC20钱包地址
+
+# Telegram API 配置（用于 Fragment 认证）
+TELEGRAM_API_ID=2040
+TELEGRAM_API_HASH=b18441a1ff607e10a989891a5462e627
+TELEGRAM_PHONE=+你的手机号（国际格式）
 ```
 
 ### 5. 启动机器人
@@ -52,15 +57,15 @@ chmod +x start.sh
 
 # 或手动启动
 pip install -r requirements.txt
-playwright install chromium
-python bot.py
+python main.py
 ```
 
-### 6. 配置 Fragment 账号
+### 6. 配置 Fragment 认证
 
 1. 在 Telegram 中向机器人发送 `/start`
-2. 发送 `/login` 开始登录 Fragment
-3. 按提示完成登录（需要扫描 QR 码）
+2. 发送 `/login` 开始 Telegram 登录流程
+3. 按提示输入验证码（从 Telegram 接收）
+4. 登录成功后 session 自动保存，无需重复登录
 
 ## 🎯 测试机器人
 
@@ -78,7 +83,7 @@ A: 检查 Token 是否正确，MongoDB 是否运行
 A: 使用 `/setprice 3 5.99` 命令（管理员）
 
 ### Q: Fragment 登录失败？
-A: 确保安装了 Playwright：`playwright install chromium`
+A: 检查 .env 中的 TELEGRAM_PHONE 配置是否正确（国际格式）
 
 ### Q: 支付检测不到？
 A: 确认钱包地址正确，用户使用 TRC20 网络
