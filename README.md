@@ -54,7 +54,7 @@
 ### 后端框架
 - **Python 3.8+**
 - **python-telegram-bot** - Telegram Bot API
-- **Playwright** - 浏览器自动化（操作 Fragment.com）
+- **Playwright (Chromium)** - 浏览器自动化（操作 Fragment.com）
 - **aiohttp** - 异步 HTTP 请求
 - **MongoDB** - 数据库
 
@@ -84,6 +84,7 @@ pip install -r requirements.txt
 ```bash
 playwright install chromium
 ```
+> **注意**: 使用 Playwright 自带的 Chromium 浏览器，无需安装系统级 Google Chrome 或其他依赖库。
 
 ### 4. 安装 MongoDB
 根据你的操作系统安装 MongoDB：
