@@ -3079,17 +3079,19 @@ async def handle_recharge_confirmation(query, user, amount):
             await query.answer("❌ 会话已过期，请重新开始", show_alert=True)
             return
         
-        # Create recharge order with unique amount
+        # Create recharge order with unique amount for payment tracking
         order_id = str(uuid.uuid4())
-        price = utils.generate_unique_price(amount)
-        product_name = f"余额充值 ${price:.4f}"
+        base_amount = amount  # Store base amount for balance credit
+        unique_amount = utils.generate_unique_price(amount)  # Generate unique amount for payment verification
+        product_name = f"余额充值 ${base_amount:.2f}"
         
         db.create_order(
             order_id=order_id,
             user_id=user.id,
             months=0,
-            price=price,
-            product_type=PRODUCT_TYPE_RECHARGE
+            price=base_amount,  # Store base amount (e.g., $10.00) for balance credit
+            product_type=PRODUCT_TYPE_RECHARGE,
+            remaining_amount=unique_amount  # Store unique amount (e.g., $10.0086) for payment verification
         )
         
         # Clear state
@@ -3109,7 +3111,7 @@ async def handle_recharge_confirmation(query, user, amount):
         message = messages.get_payment_message(
             order_id=order_id,
             product_name=product_name,
-            price=price,
+            price=unique_amount,  # Show unique amount for payment
             wallet_address=config.PAYMENT_WALLET_ADDRESS,
             expires_in_minutes=30
         )
@@ -3123,13 +3125,13 @@ async def handle_recharge_confirmation(query, user, amount):
             parse_mode='Markdown'
         )
         
-        # Start payment monitoring
+        # Start payment monitoring with unique amount
         bot_instance = query.get_bot()
         asyncio.create_task(
-            monitor_payment(bot_instance, order_id, user.id, price, query.message.chat_id)
+            monitor_payment(bot_instance, order_id, user.id, unique_amount, query.message.chat_id)
         )
         
-        utils.log_order_action(order_id, "Recharge order created", f"Amount: ${price:.4f}")
+        utils.log_order_action(order_id, "Recharge order created", f"Base: ${base_amount:.2f}, Payment: ${unique_amount:.4f}")
         
         # Edit original message
         try:
@@ -3725,7 +3727,8 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                 utils.log_order_action(order_id, "Completed", f"{order['product_quantity']} stars")
             
             elif order['product_type'] == PRODUCT_TYPE_RECHARGE:
-                # Handle balance recharge
+                # Handle balance recharge - use base price, not the unique payment amount
+                logger.info(f"Processing recharge: base amount=${order['price']:.2f}, payment amount=${order.get('remaining_amount', order['price']):.4f}")
                 new_balance = db.update_user_balance(user_id, order['price'], operation='add')
                 
                 if new_balance is not None:
@@ -3733,13 +3736,13 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                     await bot.send_message(
                         chat_id=chat_id,
                         text=f"✅ 充值成功！\n\n"
-                             f"💰 充值金额：${order['price']:.4f} USDT\n"
+                             f"💰 充值金额：${order['price']:.2f} USDT\n"
                              f"💳 当前余额：${new_balance:.4f} USDT\n"
                              f"📝 交易哈希：`{tx_hash}`\n\n"
                              f"余额可用于购买会员和星星！",
                         parse_mode='Markdown'
                     )
-                    utils.log_order_action(order_id, "Completed", f"Recharge ${order['price']:.4f}")
+                    utils.log_order_action(order_id, "Completed", f"Recharge ${order['price']:.2f}")
                 else:
                     db.update_order_status(order_id, 'failed')
                     await bot.send_message(
@@ -3947,8 +3950,8 @@ async def verify_payment(query, order_id: str):
                         await query.message.reply_text(success_msg)
                         utils.log_order_action(order_id, "Completed", f"{order['product_quantity']} stars")
                     elif order['product_type'] == PRODUCT_TYPE_RECHARGE:
-                        # Handle balance recharge
-                        logger.info(f"Processing balance recharge for user {order['user_id']}, amount: ${order['price']:.4f}")
+                        # Handle balance recharge - use base price, not the unique payment amount
+                        logger.info(f"Processing recharge for user {order['user_id']}: base amount=${order['price']:.2f}, payment amount=${order.get('remaining_amount', order['price']):.4f}")
                         new_balance = db.update_user_balance(order['user_id'], order['price'], operation='add')
                         
                         if new_balance is not None:
@@ -3956,11 +3959,11 @@ async def verify_payment(query, order_id: str):
                             logger.info(f"✅ Recharge order {order_id} completed, new balance: ${new_balance:.4f}")
                             await query.message.reply_text(
                                 f"✅ 充值成功！\n\n"
-                                f"💰 充值金额：${order['price']:.4f} USDT\n"
+                                f"💰 充值金额：${order['price']:.2f} USDT\n"
                                 f"💳 当前余额：${new_balance:.4f} USDT\n\n"
                                 f"余额可用于购买会员和星星！"
                             )
-                            utils.log_order_action(order_id, "Completed", f"Recharged ${order['price']:.4f}")
+                            utils.log_order_action(order_id, "Completed", f"Recharged ${order['price']:.2f}")
                         else:
                             db.update_order_status(order_id, 'failed')
                             logger.error(f"Failed to update balance for order {order_id}")
