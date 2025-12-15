@@ -3209,6 +3209,11 @@ async def fetch_recipient_info(bot, user_id=None, username=None):
             logger.warning("Telethon resolver not available (not configured)")
             return None
         
+        # Ensure resolver is started
+        if not await resolver.ensure_started():
+            logger.error("Failed to start Telethon resolver")
+            return None
+        
         # Try Telethon resolution
         if username:
             # Resolve by username
@@ -3217,7 +3222,7 @@ async def fetch_recipient_info(bot, user_id=None, username=None):
             
             if telethon_info:
                 # Try to get profile photo
-                photo_bytes = await resolver.get_profile_photo(telethon_info['user_id'])
+                photo_bytes = await resolver.fetch_photo_file(telethon_info['user_id'])
                 
                 # Convert to format expected by rest of code
                 info = {
@@ -3235,32 +3240,26 @@ async def fetch_recipient_info(bot, user_id=None, username=None):
                 return None
                 
         elif user_id:
-            # Resolve by user_id
+            # Resolve by user_id using the new method
             logger.info(f"Resolving user_id {user_id} via Telethon")
-            try:
-                # For user_id, we need to get entity directly
-                if not resolver._connected:
-                    await resolver.connect()
+            telethon_info = await resolver.resolve_user_id(user_id)
+            
+            if telethon_info:
+                # Try to get profile photo
+                photo_bytes = await resolver.fetch_photo_file(user_id)
                 
-                entity = await resolver.client.get_entity(user_id)
-                
-                if entity:
-                    # Try to get profile photo
-                    photo_bytes = await resolver.get_profile_photo(user_id)
-                    
-                    info = {
-                        'user_id': entity.id,
-                        'username': getattr(entity, 'username', None),
-                        'first_name': getattr(entity, 'first_name', ''),
-                        'last_name': getattr(entity, 'last_name', ''),
-                        'photo_file_id': None,
-                        'photo_bytes': photo_bytes
-                    }
-                    logger.info(f"✅ Telethon resolved user_id {user_id}")
-                    return info
-                    
-            except Exception as e:
-                logger.warning(f"Telethon could not resolve user_id {user_id}: {e}")
+                info = {
+                    'user_id': telethon_info['user_id'],
+                    'username': telethon_info.get('username'),
+                    'first_name': telethon_info['first_name'],
+                    'last_name': telethon_info.get('last_name', ''),
+                    'photo_file_id': None,
+                    'photo_bytes': photo_bytes
+                }
+                logger.info(f"✅ Telethon resolved user_id {user_id}")
+                return info
+            else:
+                logger.warning(f"Telethon could not resolve user_id {user_id}")
                 return None
         
         logger.warning(f"No valid input for resolution: user_id={user_id}, username={username}")

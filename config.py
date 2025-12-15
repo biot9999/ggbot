@@ -28,8 +28,17 @@ TELEGRAM_PHONE = os.getenv('TELEGRAM_PHONE', '')
 # 2FA 密码（如果账号启用了两步验证）
 TELEGRAM_2FA_PASSWORD = os.getenv('TELEGRAM_2FA_PASSWORD', '')
 
-# Telethon Session 文件名
+# Telethon Session 文件名（单个会话，向后兼容）
 TELEGRAM_SESSION = os.getenv('TELEGRAM_SESSION', 'fragment_session')
+
+# Telethon 多会话支持（用于用户名解析）
+# 会话文件目录（存放 *.session 文件）
+TELETHON_SESSIONS_DIR = os.getenv('TELETHON_SESSIONS_DIR', 'sessions')
+
+# 优先级会话列表（逗号分隔的会话名，不带 .session 扩展名）
+# 如果为空，将自动扫描 TELETHON_SESSIONS_DIR 目录
+# 例如：'+34654041691,+8613800138000'
+TELETHON_SESSIONS = os.getenv('TELETHON_SESSIONS', '')
 
 # ============ Fragment 配置 ============
 FRAGMENT_BOT_USERNAME = os.getenv('FRAGMENT_BOT_USERNAME', 'FragmentBot')
