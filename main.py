@@ -1647,7 +1647,33 @@ class FragmentAutomation:
         """Initialize Playwright browser"""
         if not self.playwright:
             self.playwright = await async_playwright().start()
-            self.browser = await self.playwright.chromium.launch(headless=True)
+            
+            # Try to use Google Chrome first for better stability and dependency handling
+            try:
+                self.browser = await self.playwright.chromium.launch(
+                    headless=True,
+                    channel='chrome',  # Use system-installed Google Chrome
+                    args=[
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',  # Prevent shared memory issues
+                        '--disable-gpu'  # Headless mode doesn't need GPU
+                    ]
+                )
+                logger.info("Using Google Chrome browser for Fragment automation")
+            except Exception as e:
+                # Fallback to Chromium if Chrome is not available
+                logger.warning(f"Chrome not available, falling back to Chromium: {e}")
+                self.browser = await self.playwright.chromium.launch(
+                    headless=True,
+                    args=[
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-gpu'
+                    ]
+                )
+                logger.info("Using Chromium browser for Fragment automation")
     
     async def load_session(self):
         """Load saved session"""
