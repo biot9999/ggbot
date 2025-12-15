@@ -146,7 +146,7 @@ def main():
                 print(f"⚠️ Premium 信息获取失败: {info.get('error')}")
             
             # 赠送会员（测试时注释掉）
-            # result = premium.gift_premium(123456789, months=12)
+            # result = premium.gift_premium("johndoe", months=12)  # 使用 @username
             # if result.get('ok'):
             #     print("✅ 会员开通成功！")
             # else:
