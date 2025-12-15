@@ -16,8 +16,30 @@ TRONGRID_API_KEY = os.getenv('TRONGRID_API_KEY', '')
 USDT_TRC20_CONTRACT = os.getenv('USDT_TRC20_CONTRACT', 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t')
 PAYMENT_WALLET_ADDRESS = os.getenv('PAYMENT_WALLET_ADDRESS', '')
 
-# Fragment Configuration
+# ============ Telegram API 配置 ============
+# 用于 Telethon 登录 Telegram 并获取 Fragment 认证
+# 默认使用公共 API（无需用户申请）
+TELEGRAM_API_ID = int(os.getenv('TELEGRAM_API_ID', '2040'))
+TELEGRAM_API_HASH = os.getenv('TELEGRAM_API_HASH', 'b18441a1ff607e10a989891a5462e627')
+
+# 用户手机号（需要配置，国际格式，如 +8613800138000）
+TELEGRAM_PHONE = os.getenv('TELEGRAM_PHONE', '')
+
+# Telethon Session 文件名
+TELEGRAM_SESSION = os.getenv('TELEGRAM_SESSION', 'fragment_session')
+
+# ============ Fragment 配置 ============
+FRAGMENT_BOT_USERNAME = os.getenv('FRAGMENT_BOT_USERNAME', 'FragmentBot')
+
+# 旧的 session 文件（向后兼容，将被弃用）
 FRAGMENT_SESSION_FILE = os.getenv('FRAGMENT_SESSION_FILE', 'fragment_session.json')
+
+# 会员套餐配置
+PREMIUM_PLANS = {
+    3: {'price_ton': 7.69, 'discount': '-20%'},
+    6: {'price_ton': 10.25, 'discount': '-47%'},
+    12: {'price_ton': 18.59, 'discount': '-52%'}
+}
 
 # Premium Package Prices (in USDT)
 PRICES = {
