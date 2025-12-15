@@ -1604,6 +1604,14 @@ class FragmentAutomation:
     FRAGMENT_URLS = ['https://fragment.com', 'https://www.fragment.com']
     FRAGMENT_BASE_PATHS = ['https://fragment.com/', 'https://www.fragment.com/']
     
+    # Browser launch arguments for stability in headless mode
+    BROWSER_ARGS = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',  # Prevent shared memory issues
+        '--disable-gpu'  # Headless mode doesn't need GPU
+    ]
+    
     def __init__(self):
         self.session_file = config.FRAGMENT_SESSION_FILE
         self.playwright = None
@@ -1653,25 +1661,16 @@ class FragmentAutomation:
                 self.browser = await self.playwright.chromium.launch(
                     headless=True,
                     channel='chrome',  # Use system-installed Google Chrome
-                    args=[
-                        '--no-sandbox',
-                        '--disable-setuid-sandbox',
-                        '--disable-dev-shm-usage',  # Prevent shared memory issues
-                        '--disable-gpu'  # Headless mode doesn't need GPU
-                    ]
+                    args=self.BROWSER_ARGS
                 )
                 logger.info("Using Google Chrome browser for Fragment automation")
-            except Exception as e:
+            except (PlaywrightTimeout, RuntimeError, OSError) as e:
                 # Fallback to Chromium if Chrome is not available
+                # Common errors: browser not found, launch failed, missing dependencies
                 logger.warning(f"Chrome not available, falling back to Chromium: {e}")
                 self.browser = await self.playwright.chromium.launch(
                     headless=True,
-                    args=[
-                        '--no-sandbox',
-                        '--disable-setuid-sandbox',
-                        '--disable-dev-shm-usage',
-                        '--disable-gpu'
-                    ]
+                    args=self.BROWSER_ARGS
                 )
                 logger.info("Using Chromium browser for Fragment automation")
     
