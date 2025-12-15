@@ -82,6 +82,27 @@ STARS_PACKAGES = [100, 250, 500, 1000, 2500]
 
 logger = logging.getLogger(__name__)
 
+# ============================================================================
+# NAMESPACE CLASSES
+# ============================================================================
+
+class MessageNamespace:
+    """Namespace for message functions"""
+    pass
+
+class KeyboardNamespace:
+    """Namespace for keyboard functions"""
+    pass
+
+class UtilsNamespace:
+    """Namespace for utility functions"""
+    pass
+
+# Create namespace instances
+messages = MessageNamespace()
+keyboards = KeyboardNamespace()
+utils = UtilsNamespace()
+
 def format_time_remaining(expires_at) -> str:
     """Format remaining time until expiration"""
     if isinstance(expires_at, (int, float)):
@@ -862,6 +883,59 @@ def get_gift_confirmation_message(recipient_info, months, price):
     message += "确认无误后点击「确认赠送」继续支付\n"
     
     return message
+
+# ============================================================================
+# ASSIGN FUNCTIONS TO NAMESPACES
+# ============================================================================
+
+# Assign message functions to messages namespace
+messages.get_welcome_message = get_welcome_message
+messages.get_buy_premium_message = get_buy_premium_message
+messages.get_buy_stars_message = get_buy_stars_message
+messages.get_purchase_type_message = get_purchase_type_message
+messages.get_payment_message = get_payment_message
+messages.get_order_details_message = get_order_details_message
+messages.get_user_center_message = get_user_center_message
+messages.get_orders_list_message = get_orders_list_message
+messages.get_admin_stats_message = get_admin_stats_message
+messages.get_help_message = get_help_message
+messages.get_cancel_message = get_cancel_message
+messages.get_recharge_message = get_recharge_message
+messages.get_recharge_confirmation_message = get_recharge_confirmation_message
+messages.get_gift_confirmation_message = get_gift_confirmation_message
+
+# Assign keyboard functions to keyboards namespace
+keyboards.get_main_menu_keyboard = get_main_menu_keyboard
+keyboards.get_premium_packages_keyboard = get_premium_packages_keyboard
+keyboards.get_purchase_type_keyboard = get_purchase_type_keyboard
+keyboards.get_stars_packages_keyboard = get_stars_packages_keyboard
+keyboards.get_payment_keyboard = get_payment_keyboard
+keyboards.get_order_details_keyboard = get_order_details_keyboard
+keyboards.get_user_center_keyboard = get_user_center_keyboard
+keyboards.get_orders_pagination_keyboard = get_orders_pagination_keyboard
+keyboards.get_admin_panel_keyboard = get_admin_panel_keyboard
+keyboards.get_admin_stats_keyboard = get_admin_stats_keyboard
+keyboards.get_back_to_main_keyboard = get_back_to_main_keyboard
+keyboards.get_cancel_keyboard = get_cancel_keyboard
+keyboards.get_gift_confirmation_keyboard = get_gift_confirmation_keyboard
+keyboards.get_recharge_confirmation_keyboard = get_recharge_confirmation_keyboard
+
+# Assign utility functions to utils namespace
+utils.format_time_remaining = format_time_remaining
+utils.validate_username = validate_username
+utils.validate_user_id = validate_user_id
+utils.get_product_name = get_product_name
+utils.calculate_success_rate = calculate_success_rate
+utils.get_date_range = get_date_range
+utils.truncate_string = truncate_string
+utils.format_currency = format_currency
+utils.generate_unique_price = generate_unique_price
+utils.parse_recipient_input = parse_recipient_input
+utils.get_order_summary = get_order_summary
+utils.log_order_action = log_order_action
+utils.log_payment_action = log_payment_action
+utils.log_user_action = log_user_action
+
 from datetime import datetime
 import logging
 
@@ -2495,16 +2569,16 @@ async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ Fragment 登录成功！")
         else:
             await update.message.reply_text(
-                "❌ **Fragment 登录失败**\n\n"
-                "**可能的原因：**\n"
+                "❌ <b>Fragment 登录失败</b>\n\n"
+                "<b>可能的原因：</b>\n"
                 "1️⃣ 未在 3 分钟内完成登录（扫描二维码或手机号确认）\n"
                 "2️⃣ 网络连接不稳定或超时\n"
                 "3️⃣ Fragment.com 页面结构已更新\n"
                 "4️⃣ Playwright 浏览器启动失败\n\n"
-                "**登录方式：**\n"
+                "<b>登录方式：</b>\n"
                 "• 📱 扫描二维码登录\n"
                 "• 📞 使用手机号码登录\n\n"
-                "**排查步骤：**\n"
+                "<b>排查步骤：</b>\n"
                 "• 检查服务器网络连接\n"
                 "• 确认 Playwright 浏览器已正确安装\n"
                 "• 查看日志文件获取详细错误信息\n"
@@ -2514,24 +2588,24 @@ async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "  - fragment_login_error.png（错误截图）\n"
                 "  - fragment_login_timeout.png（超时截图）\n"
                 "  - fragment_page_*.html（页面HTML）\n\n"
-                "**日志位置：**\n"
-                "使用命令查看日志：`journalctl -u telegram-premium-bot -n 100`\n\n"
+                "<b>日志位置：</b>\n"
+                "使用命令查看日志：<code>journalctl -u telegram-premium-bot -n 100</code>\n\n"
                 "如果问题持续，请重启服务后重试。",
-                parse_mode='Markdown'
+                parse_mode='HTML'
             )
     except Exception as e:
         logger.error(f"Exception in login_command: {e}", exc_info=True)
         await update.message.reply_text(
-            f"❌ **登录过程中发生异常**\n\n"
-            f"**错误类型：** {type(e).__name__}\n"
-            f"**错误信息：** {str(e)}\n\n"
-            f"**建议操作：**\n"
+            f"❌ <b>登录过程中发生异常</b>\n\n"
+            f"<b>错误类型：</b> {type(e).__name__}\n"
+            f"<b>错误信息：</b> {str(e)}\n\n"
+            f"<b>建议操作：</b>\n"
             f"• 检查服务器资源（内存、CPU）\n"
             f"• 确认 Playwright 依赖已安装：\n"
-            f"  `python -m playwright install chromium`\n"
+            f"  <code>python -m playwright install chromium</code>\n"
             f"• 查看完整日志获取更多信息\n"
             f"• 如果是网络问题，请检查防火墙设置",
-            parse_mode='Markdown'
+            parse_mode='HTML'
         )
 
 # ============================================================================
@@ -3791,33 +3865,33 @@ async def admin_login(query, user):
             await query.message.reply_text("✅ Fragment 登录成功！")
         else:
             await query.message.reply_text(
-                "❌ **Fragment 登录失败**\n\n"
-                "**可能的原因：**\n"
+                "❌ <b>Fragment 登录失败</b>\n\n"
+                "<b>可能的原因：</b>\n"
                 "1️⃣ 未在 2 分钟内扫描二维码\n"
                 "2️⃣ 网络连接不稳定或超时\n"
                 "3️⃣ Fragment.com 页面结构已更新\n"
                 "4️⃣ Playwright 浏览器启动失败\n\n"
-                "**排查步骤：**\n"
+                "<b>排查步骤：</b>\n"
                 "• 检查服务器网络连接\n"
                 "• 确认 Playwright 浏览器已正确安装\n"
                 "• 查看日志文件获取详细错误信息\n"
                 "• 检查 /tmp 目录下的截图文件\n\n"
-                "**日志位置：**\n"
-                "使用命令查看日志：`journalctl -u telegram-premium-bot -n 50`\n\n"
+                "<b>日志位置：</b>\n"
+                "使用命令查看日志：<code>journalctl -u telegram-premium-bot -n 50</code>\n\n"
                 "如果问题持续，请重启服务后重试。",
-                parse_mode='Markdown'
+                parse_mode='HTML'
             )
     except Exception as e:
         logger.error(f"Exception in admin_login: {e}", exc_info=True)
         await query.message.reply_text(
-            f"❌ **登录过程中发生异常**\n\n"
-            f"**错误类型：** {type(e).__name__}\n"
-            f"**错误信息：** {str(e)}\n\n"
-            f"**建议操作：**\n"
+            f"❌ <b>登录过程中发生异常</b>\n\n"
+            f"<b>错误类型：</b> {type(e).__name__}\n"
+            f"<b>错误信息：</b> {str(e)}\n\n"
+            f"<b>建议操作：</b>\n"
             f"• 检查服务器资源（内存、CPU）\n"
             f"• 确认 Playwright 依赖已安装\n"
             f"• 查看完整日志获取更多信息",
-            parse_mode='Markdown'
+            parse_mode='HTML'
         )
 
 async def show_order_details(query, order_id: str):
