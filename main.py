@@ -40,6 +40,9 @@ import config
 # Import Fragment modules
 from fragment_premium import FragmentPremium
 
+# Import Telethon resolver
+from telethon_resolver import get_resolver
+
 # ============================================================================
 # CONSTANTS
 # ============================================================================
@@ -291,6 +294,79 @@ def log_payment_action(tx_hash: str, action: str, details: str = ""):
 def log_user_action(user_id: int, action: str, details: str = ""):
     """Log user-related actions"""
     logger.info(f"User {user_id} - {action} - {details}")
+
+async def safe_edit_message(message, text: str = None, caption: str = None, 
+                           reply_markup=None, parse_mode: str = None):
+    """
+    Safely edit a message, handling both photo+caption and text messages
+    
+    This helper handles cases where:
+    - Original message is a photo with caption -> use edit_message_caption
+    - Original message is text -> use edit_message_text
+    - Edit fails -> fall back to sending a new message
+    
+    Args:
+        message: The message object to edit
+        text: Text content (for text messages)
+        caption: Caption content (for photo messages)
+        reply_markup: Optional keyboard markup
+        parse_mode: Optional parse mode (Markdown, HTML)
+    
+    Returns:
+        bool: True if edit/send succeeded, False otherwise
+    """
+    try:
+        # Determine if this is a photo message or text message
+        is_photo = message.photo is not None and len(message.photo) > 0
+        
+        if is_photo:
+            # For photo messages, use edit_message_caption
+            content = caption if caption is not None else text
+            if content is not None:
+                await message.edit_caption(
+                    caption=content,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode
+                )
+            else:
+                # Just update keyboard
+                await message.edit_reply_markup(reply_markup=reply_markup)
+            logger.debug("Successfully edited photo caption")
+            return True
+        else:
+            # For text messages, use edit_message_text
+            content = text if text is not None else caption
+            if content is not None:
+                await message.edit_text(
+                    text=content,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode
+                )
+            else:
+                # Just update keyboard
+                await message.edit_reply_markup(reply_markup=reply_markup)
+            logger.debug("Successfully edited text message")
+            return True
+            
+    except Exception as e:
+        # If edit fails (e.g., message too old, identical content), try sending new message
+        logger.warning(f"Failed to edit message: {e}. Attempting to send new message.")
+        try:
+            content = text or caption
+            if content:
+                await message.reply_text(
+                    text=content,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode
+                )
+                logger.debug("Sent new message as fallback")
+                return True
+        except Exception as e2:
+            logger.error(f"Failed to send fallback message: {e2}")
+            return False
+    
+    return False
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 def get_main_menu_keyboard():
@@ -1034,8 +1110,14 @@ class Database:
     
     # Order operations
     def create_order(self, order_id, user_id, months, price, product_type='premium', 
-                     product_quantity=None, recipient_id=None, recipient_username=None):
-        """Create a new order"""
+                     product_quantity=None, recipient_id=None, recipient_username=None,
+                     balance_to_use=0.0, remaining_amount=None):
+        """Create a new order
+        
+        Args:
+            balance_to_use: Amount of user balance that will be used for this order
+            remaining_amount: Amount remaining to be paid on-chain (None means use price)
+        """
         order_data = {
             'order_id': order_id,
             'user_id': user_id,
@@ -1049,7 +1131,9 @@ class Database:
             'payment_address': config.PAYMENT_WALLET_ADDRESS,
             'expires_at': datetime.now().timestamp() + config.PAYMENT_TIMEOUT,
             'recipient_id': recipient_id,  # For gifts
-            'recipient_username': recipient_username
+            'recipient_username': recipient_username,
+            'balance_to_use': balance_to_use,  # Amount from user balance
+            'remaining_amount': remaining_amount if remaining_amount is not None else price  # Amount to pay on-chain
         }
         self.orders.insert_one(order_data)
         return order_data
@@ -2032,6 +2116,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     data = query.data
     
+    # Log callback query at INFO level for observability
+    logger.info(f"📱 Callback Query: user_id={user.id}, username={user.username}, data={data}")
+    
     utils.log_user_action(user.id, f"Callback: {data}")
     
     # Main menu navigation
@@ -2269,27 +2356,212 @@ async def show_purchase_type(query, months):
 # PURCHASE HANDLERS
 # ============================================================================
 
+async def fulfill_order_immediately(bot, order, user_id: int, chat_id: int):
+    """
+    Fulfill an order immediately (used for balance-only purchases)
+    
+    Args:
+        bot: Bot instance
+        order: Order dict
+        user_id: User ID
+        chat_id: Chat ID for notifications
+        
+    Returns:
+        bool: True if fulfilled successfully
+    """
+    try:
+        order_id = order['order_id']
+        product_type = order['product_type']
+        
+        if product_type == PRODUCT_TYPE_PREMIUM:
+            # Determine recipient
+            recipient_id = order.get('recipient_id') or user_id
+            recipient_username = order.get('recipient_username')
+            
+            # If we only have username, try to resolve to ID using Telethon
+            if not recipient_id and recipient_username:
+                logger.info(f"Attempting Telethon resolution for recipient @{recipient_username}")
+                try:
+                    resolver = await get_resolver()
+                    if resolver:
+                        telethon_info = await resolver.resolve_username(recipient_username)
+                        if telethon_info:
+                            recipient_id = telethon_info['user_id']
+                            logger.info(f"✅ Telethon resolved @{recipient_username} to user_id {recipient_id}")
+                        else:
+                            logger.warning(f"Telethon could not resolve @{recipient_username}")
+                except Exception as e:
+                    logger.warning(f"Error during Telethon resolution: {e}")
+            
+            # If still no recipient_id, use buyer's ID as fallback
+            if not recipient_id:
+                logger.warning(f"No recipient_id available for order {order_id}, using buyer's ID")
+                recipient_id = user_id
+            
+            # Gift Premium
+            logger.info(f"Attempting to gift {order['months']} months Premium to user {recipient_id}")
+            success = await fragment.gift_premium(recipient_id, order['months'])
+            
+            if success:
+                db.update_order_status(order_id, 'completed')
+                logger.info(f"✅ Order {order_id} completed successfully")
+                
+                # Create gift record if applicable
+                if order.get('recipient_id') or order.get('recipient_username'):
+                    db.create_gift_record(
+                        order_id,
+                        user_id,
+                        recipient_id,
+                        PRODUCT_TYPE_PREMIUM,
+                        order['months']
+                    )
+                
+                # Send success message
+                success_msg = f"✅ 订单完成！\n\n💎 {order['months']} 个月 Telegram Premium 已开通！\n"
+                if order.get('balance_to_use', 0) > 0:
+                    success_msg += f"💰 使用余额：${order['balance_to_use']:.4f}\n"
+                
+                if recipient_username:
+                    success_msg += f"🎁 已赠送给：@{recipient_username}\n"
+                elif order.get('recipient_id') and order.get('recipient_id') != user_id:
+                    success_msg += f"🎁 已赠送给：User ID {order['recipient_id']}\n"
+                
+                success_msg += "\n感谢您的购买！"
+                
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=success_msg,
+                    parse_mode='Markdown'
+                )
+                utils.log_order_action(order_id, "Completed", "Premium gifted (balance payment)")
+                return True
+            else:
+                # Keep order as 'paid' for manual retry
+                retry_count = db.update_order_status(order_id, 'paid', error=ERROR_MSG_FRAGMENT_GIFTING_FAILED)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ 订单已创建，但 Premium 开通遇到问题。\n\n管理员将尽快处理。\n订单号：`{order_id}`",
+                    parse_mode='Markdown'
+                )
+                utils.log_order_action(order_id, "Paid-NeedsRetry", f"Premium gifting failed, attempt {retry_count}")
+                return False
+                
+        elif product_type == PRODUCT_TYPE_STARS:
+            # Mark stars as completed
+            db.update_order_status(order_id, 'completed')
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"✅ 订单完成！\n\n⭐ {order['product_quantity']} Telegram Stars 已充值！\n"
+                     f"💰 使用余额：${order.get('balance_to_use', 0):.4f}\n\n"
+                     f"感谢您的购买！",
+                parse_mode='Markdown'
+            )
+            utils.log_order_action(order_id, "Completed", f"{order['product_quantity']} stars (balance payment)")
+            return True
+            
+        elif product_type == PRODUCT_TYPE_RECHARGE:
+            # This shouldn't happen (recharge doesn't use balance)
+            logger.error(f"Recharge order {order_id} should not use balance payment")
+            return False
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error fulfilling order {order['order_id']}: {e}", exc_info=True)
+        return False
+
 async def handle_self_purchase(query, user, months):
-    """Handle purchase for self"""
+    """Handle purchase for self with balance-first strategy"""
     prices = db.get_prices()
     base_price = prices[months]
-    price = utils.generate_unique_price(base_price)
+    
+    # Check user balance
+    user_balance = db.get_user_balance(user.id)
     
     # Create order
     order_id = str(uuid.uuid4())
     product_name = utils.get_product_name(PRODUCT_TYPE_PREMIUM, months=months)
     
-    db.create_order(
-        order_id=order_id,
-        user_id=user.id,
-        months=months,
-        price=price,
-        product_type=PRODUCT_TYPE_PREMIUM
-    )
-    
-    await send_payment_info(query, order_id, product_name, price, user.id)
-    
-    utils.log_order_action(order_id, "Created", f"User {user.id}, {months} months, ${price:.4f}")
+    if user_balance >= base_price:
+        # Full payment from balance
+        logger.info(f"User {user.id} has sufficient balance (${user_balance:.4f}) for ${base_price:.2f}")
+        
+        # Deduct balance immediately
+        new_balance = db.update_user_balance(user.id, base_price, operation='subtract')
+        
+        if new_balance is not None:
+            # Create order with balance payment
+            db.create_order(
+                order_id=order_id,
+                user_id=user.id,
+                months=months,
+                price=base_price,
+                product_type=PRODUCT_TYPE_PREMIUM,
+                balance_to_use=base_price,
+                remaining_amount=0.0
+            )
+            
+            # Mark as paid immediately
+            db.update_order_status(order_id, 'paid')
+            
+            # Send processing message
+            await query.edit_message_text(
+                f"⚙️ 正在处理您的订单...\n\n"
+                f"💰 已扣除余额：${base_price:.2f}\n"
+                f"💳 剩余余额：${new_balance:.4f}"
+            )
+            
+            # Fulfill immediately
+            order = db.get_order(order_id)
+            bot_instance = query.get_bot()
+            success = await fulfill_order_immediately(bot_instance, order, user.id, query.message.chat_id)
+            
+            utils.log_order_action(order_id, "Created-BalancePaid", f"User {user.id}, {months} months, balance: ${base_price:.2f}")
+        else:
+            await query.answer("❌ 余额扣除失败，请重试", show_alert=True)
+            
+    elif user_balance > 0:
+        # Partial payment from balance
+        balance_to_use = user_balance
+        remaining_amount = base_price - balance_to_use
+        unique_remaining = utils.generate_unique_price(remaining_amount)
+        
+        logger.info(f"User {user.id} using partial balance: ${balance_to_use:.4f}, remaining: ${unique_remaining:.4f}")
+        
+        # Create order with partial balance (don't deduct yet)
+        db.create_order(
+            order_id=order_id,
+            user_id=user.id,
+            months=months,
+            price=base_price,
+            product_type=PRODUCT_TYPE_PREMIUM,
+            balance_to_use=balance_to_use,
+            remaining_amount=unique_remaining
+        )
+        
+        # Show payment info for remaining amount
+        await send_payment_info(query, order_id, product_name, unique_remaining, user.id, 
+                               balance_info=f"💰 将使用余额：${balance_to_use:.4f}\n📊 需链上支付：${unique_remaining:.4f}")
+        
+        utils.log_order_action(order_id, "Created-PartialBalance", 
+                              f"User {user.id}, {months} months, balance: ${balance_to_use:.4f}, remaining: ${unique_remaining:.4f}")
+    else:
+        # No balance, full payment on-chain
+        price = utils.generate_unique_price(base_price)
+        
+        db.create_order(
+            order_id=order_id,
+            user_id=user.id,
+            months=months,
+            price=price,
+            product_type=PRODUCT_TYPE_PREMIUM,
+            balance_to_use=0.0,
+            remaining_amount=price
+        )
+        
+        await send_payment_info(query, order_id, product_name, price, user.id)
+        
+        utils.log_order_action(order_id, "Created", f"User {user.id}, {months} months, ${price:.4f}")
 
 async def handle_gift_purchase_start(query, user, months):
     """Start gift purchase flow - ask for recipient"""
@@ -2319,27 +2591,98 @@ async def handle_gift_purchase_start(query, user, months):
     )
 
 async def handle_stars_purchase(query, user, stars):
-    """Handle stars purchase"""
+    """Handle stars purchase with balance-first strategy"""
     prices = db.get_stars_prices()
     base_price = prices.get(stars, stars * 0.01)
-    price = utils.generate_unique_price(base_price)
+    
+    # Check user balance
+    user_balance = db.get_user_balance(user.id)
     
     # Create order
     order_id = str(uuid.uuid4())
     product_name = utils.get_product_name(PRODUCT_TYPE_STARS, stars=stars)
     
-    db.create_order(
-        order_id=order_id,
-        user_id=user.id,
-        months=0,  # Not applicable for stars
-        price=price,
-        product_type=PRODUCT_TYPE_STARS,
-        product_quantity=stars
-    )
-    
-    await send_payment_info(query, order_id, product_name, price, user.id)
-    
-    utils.log_order_action(order_id, "Created", f"User {user.id}, {stars} stars, ${price:.4f}")
+    if user_balance >= base_price:
+        # Full payment from balance
+        logger.info(f"User {user.id} has sufficient balance (${user_balance:.4f}) for ${base_price:.2f}")
+        
+        # Deduct balance immediately
+        new_balance = db.update_user_balance(user.id, base_price, operation='subtract')
+        
+        if new_balance is not None:
+            # Create order with balance payment
+            db.create_order(
+                order_id=order_id,
+                user_id=user.id,
+                months=0,
+                price=base_price,
+                product_type=PRODUCT_TYPE_STARS,
+                product_quantity=stars,
+                balance_to_use=base_price,
+                remaining_amount=0.0
+            )
+            
+            # Mark as paid and completed immediately
+            db.update_order_status(order_id, 'paid')
+            db.update_order_status(order_id, 'completed')
+            
+            # Send success message
+            await query.edit_message_text(
+                f"✅ 订单完成！\n\n"
+                f"⭐ {stars} Telegram Stars 已充值！\n"
+                f"💰 已扣除余额：${base_price:.2f}\n"
+                f"💳 剩余余额：${new_balance:.4f}\n\n"
+                f"感谢您的购买！"
+            )
+            
+            utils.log_order_action(order_id, "Completed-BalancePaid", f"User {user.id}, {stars} stars, balance: ${base_price:.2f}")
+        else:
+            await query.answer("❌ 余额扣除失败，请重试", show_alert=True)
+            
+    elif user_balance > 0:
+        # Partial payment from balance
+        balance_to_use = user_balance
+        remaining_amount = base_price - balance_to_use
+        unique_remaining = utils.generate_unique_price(remaining_amount)
+        
+        logger.info(f"User {user.id} using partial balance: ${balance_to_use:.4f}, remaining: ${unique_remaining:.4f}")
+        
+        # Create order with partial balance (don't deduct yet)
+        db.create_order(
+            order_id=order_id,
+            user_id=user.id,
+            months=0,
+            price=base_price,
+            product_type=PRODUCT_TYPE_STARS,
+            product_quantity=stars,
+            balance_to_use=balance_to_use,
+            remaining_amount=unique_remaining
+        )
+        
+        # Show payment info for remaining amount
+        await send_payment_info(query, order_id, product_name, unique_remaining, user.id,
+                               balance_info=f"💰 将使用余额：${balance_to_use:.4f}\n📊 需链上支付：${unique_remaining:.4f}")
+        
+        utils.log_order_action(order_id, "Created-PartialBalance",
+                              f"User {user.id}, {stars} stars, balance: ${balance_to_use:.4f}, remaining: ${unique_remaining:.4f}")
+    else:
+        # No balance, full payment on-chain
+        price = utils.generate_unique_price(base_price)
+        
+        db.create_order(
+            order_id=order_id,
+            user_id=user.id,
+            months=0,
+            price=price,
+            product_type=PRODUCT_TYPE_STARS,
+            product_quantity=stars,
+            balance_to_use=0.0,
+            remaining_amount=price
+        )
+        
+        await send_payment_info(query, order_id, product_name, price, user.id)
+        
+        utils.log_order_action(order_id, "Created", f"User {user.id}, {stars} stars, ${price:.4f}")
 
 async def handle_gift_confirmation(query, user, order_data):
     """Handle gift purchase confirmation"""
@@ -2535,8 +2878,12 @@ async def handle_recharge_cancellation(query, user):
     
     utils.log_user_action(user.id, "Recharge cancelled")
 
-async def send_payment_info(query, order_id, product_name, price, user_id):
-    """Send payment information with QR code"""
+async def send_payment_info(query, order_id, product_name, price, user_id, balance_info=None):
+    """Send payment information with QR code
+    
+    Args:
+        balance_info: Optional balance usage info to display
+    """
     # Generate QR code
     payment_text = config.PAYMENT_WALLET_ADDRESS
     qr = qrcode.QRCode(version=1, box_size=10, border=5)
@@ -2556,6 +2903,10 @@ async def send_payment_info(query, order_id, product_name, price, user_id):
         wallet_address=config.PAYMENT_WALLET_ADDRESS,
         expires_in_minutes=30
     )
+    
+    # Add balance info if provided
+    if balance_info:
+        message = balance_info + "\n\n" + message
     
     # Create keyboard
     keyboard = keyboards.get_payment_keyboard(order_id)
@@ -2579,49 +2930,109 @@ async def send_payment_info(query, order_id, product_name, price, user_id):
 # ============================================================================
 
 async def fetch_recipient_info(bot, user_id=None, username=None):
-    """Fetch recipient information from Telegram API"""
+    """
+    Fetch recipient information from Telegram API
+    Priority: text_mention > Bot API get_chat > Telethon resolver
+    
+    Args:
+        bot: Bot instance
+        user_id: Telegram user ID (optional)
+        username: Telegram username without @ (optional)
+    
+    Returns:
+        dict: User info or None if all methods fail
+    """
     try:
+        # Method 1: Try Bot API get_chat
         if user_id:
             # Try to get user info by ID
             try:
                 chat = await bot.get_chat(user_id)
+                # Extract user information
+                info = {
+                    'user_id': chat.id,
+                    'username': chat.username,
+                    'first_name': chat.first_name,
+                    'last_name': chat.last_name,
+                    'photo_file_id': None
+                }
+                
+                # Try to get profile photo
+                try:
+                    photos = await bot.get_user_profile_photos(chat.id, limit=1)
+                    if photos.total_count > 0:
+                        photo = photos.photos[0][0]
+                        info['photo_file_id'] = photo.file_id
+                except Exception as e:
+                    logger.debug(f"Could not get profile photo: {e}")
+                
+                logger.info(f"✅ Bot API resolved user_id {user_id}")
+                return info
+                
             except Exception as e:
-                logger.warning(f"Could not get chat for user_id {user_id}: {e}")
-                return None
+                logger.warning(f"Bot API could not get chat for user_id {user_id}: {e}")
+                # Fall through to Telethon if username available
+                
         elif username:
-            # Try to get user info by username
+            # Try to get user info by username via Bot API
             try:
-                # For username, we need to try getting the chat
                 chat = await bot.get_chat(f"@{username}")
+                info = {
+                    'user_id': chat.id,
+                    'username': chat.username,
+                    'first_name': chat.first_name,
+                    'last_name': chat.last_name,
+                    'photo_file_id': None
+                }
+                
+                # Try to get profile photo
+                try:
+                    photos = await bot.get_user_profile_photos(chat.id, limit=1)
+                    if photos.total_count > 0:
+                        photo = photos.photos[0][0]
+                        info['photo_file_id'] = photo.file_id
+                except Exception as e:
+                    logger.debug(f"Could not get profile photo: {e}")
+                
+                logger.info(f"✅ Bot API resolved username @{username}")
+                return info
+                
             except Exception as e:
-                logger.warning(f"Could not get chat for username @{username}: {e}")
-                return None
-        else:
-            return None
+                logger.warning(f"Bot API could not get chat for username @{username}: {e}")
+                # Fall through to Telethon
         
-        # Extract user information
-        info = {
-            'user_id': chat.id,
-            'username': chat.username,
-            'first_name': chat.first_name,
-            'last_name': chat.last_name,
-        }
+        # Method 2: Try Telethon resolver as fallback (only for username)
+        if username:
+            try:
+                logger.info(f"Attempting Telethon resolution for @{username}")
+                resolver = await get_resolver()
+                
+                if resolver:
+                    telethon_info = await resolver.resolve_username(username)
+                    
+                    if telethon_info:
+                        # Convert Telethon info to our format
+                        info = {
+                            'user_id': telethon_info['user_id'],
+                            'username': telethon_info['username'],
+                            'first_name': telethon_info['first_name'],
+                            'last_name': telethon_info.get('last_name', ''),
+                            'photo_file_id': None  # Telethon photo bytes not compatible with Bot API
+                        }
+                        logger.info(f"✅ Telethon resolved @{username} to user_id {info['user_id']}")
+                        return info
+                else:
+                    logger.info("Telethon resolver not available (not configured)")
+                    
+            except Exception as e:
+                logger.warning(f"Telethon resolution failed for @{username}: {e}")
         
-        # Try to get profile photo
-        try:
-            photos = await bot.get_user_profile_photos(chat.id, limit=1)
-            if photos.total_count > 0:
-                # Get the first photo (smallest size)
-                photo = photos.photos[0][0]
-                info['photo_file_id'] = photo.file_id
-        except Exception as e:
-            logger.debug(f"Could not get profile photo: {e}")
-            info['photo_file_id'] = None
-        
-        return info
+        # All methods failed
+        logger.warning(f"All resolution methods failed for user_id={user_id}, username={username}")
+        return None
         
     except Exception as e:
-        logger.error(f"Error fetching recipient info: {e}")
+        logger.error(f"Error in fetch_recipient_info: {e}", exc_info=True)
         return None
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2722,25 +3133,78 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             }
         
         if fetched_info is None:
-            error_msg = "❌ 无法获取收礼人信息\n\n"
+            # If we have a username but couldn't fetch info, offer to proceed anyway
             if recipient_username and not recipient_id:
-                # Explain username limitations more clearly
-                error_msg += (
+                logger.info(f"Could not fetch info for @{recipient_username}, offering to proceed with username only")
+                
+                # Show option to proceed with username only
+                error_msg = (
+                    "⚠️ **无法验证收礼人信息**\n\n"
                     "**关于 @username 验证：**\n"
-                    "由于 Telegram Bot API 的限制，通过 @username 获取用户信息需要满足以下条件之一：\n"
-                    "• 该用户必须先与本 Bot 进行过交互（发送过 /start）\n"
-                    "• 该用户的隐私设置允许被 Bot 查询\n\n"
-                    "**推荐的解决方法：**\n\n"
-                    "✨ **最简单的方法 - 使用 @ 提及功能**\n"
-                    "   1. 输入 @ 符号\n"
-                    "   2. 从列表中选择联系人\n"
-                    "   3. 如果显示为蓝色链接，即可成功识别\n\n"
-                    "🔄 **其他方法：**\n"
-                    "   • 转发对方的任意消息给我\n"
-                    "   • 让对方先发送 /start 给本 Bot\n"
+                    "由于 Telegram Bot API 和 Telethon 的限制，无法验证该用户。\n\n"
+                    "**您可以选择：**\n\n"
+                    "1️⃣ **继续使用 @username**\n"
+                    "   • 我们会记录 username\n"
+                    "   • 支付后会尝试再次解析\n"
+                    "   • 如果解析成功，会员将正常开通\n\n"
+                    "2️⃣ **重新输入其他方式**\n"
+                    "   • 使用 @ 提及功能（显示为蓝色链接）\n"
+                    "   • 转发对方的消息给我\n"
                     "   • 获取对方的 User ID（数字格式）\n\n"
                 )
-            elif recipient_id:
+                
+                # Update state to allow confirmation with username only
+                db.set_user_state(user.id, 'confirm_recipient', {
+                    'months': months,
+                    'price': price,
+                    'recipient_id': None,
+                    'recipient_username': recipient_username,
+                    'recipient_info': {
+                        'user_id': None,
+                        'username': recipient_username,
+                        'first_name': f"@{recipient_username}",
+                        'last_name': '',
+                        'photo_file_id': None
+                    }
+                })
+                
+                # Show confirmation with username only
+                confirmation_message = f"""
+🎁 **确认赠送信息**
+
+📦 商品：{months}个月 Telegram Premium
+💰 价格：${price:.2f} USDT
+
+👤 **收礼人**：@{recipient_username}
+⚠️ **提示**：无法验证该用户，但仍可继续
+
+━━━━━━━━━━━━━━
+📌 支付后我们会再次尝试解析该用户
+如果成功，会员将自动开通
+"""
+                
+                # Encode order data
+                import json
+                import base64
+                order_data_dict = {
+                    'months': months,
+                    'recipient_id': None,
+                    'recipient_username': recipient_username
+                }
+                order_data = base64.b64encode(json.dumps(order_data_dict).encode()).decode()
+                
+                keyboard = keyboards.get_gift_confirmation_keyboard(order_data)
+                
+                await update.message.reply_text(
+                    confirmation_message,
+                    reply_markup=keyboard,
+                    parse_mode='Markdown'
+                )
+                return
+            
+            # For other cases (no username, or user_id failed), show error
+            error_msg = "❌ 无法获取收礼人信息\n\n"
+            if recipient_id:
                 error_msg += (
                     "**可能的原因：**\n"
                     "• User ID 不正确\n"
@@ -2884,15 +3348,49 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                 payment_info['from']
             )
             
+            # Get order details
+            order = db.get_order(order_id)
+            
+            # Deduct balance if this order uses partial balance
+            balance_to_use = order.get('balance_to_use', 0.0)
+            if balance_to_use > 0:
+                logger.info(f"Deducting balance ${balance_to_use:.4f} for order {order_id}")
+                new_balance = db.update_user_balance(user_id, balance_to_use, operation='subtract')
+                if new_balance is None:
+                    logger.error(f"Failed to deduct balance for order {order_id}")
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text="⚠️ 链上支付已确认，但余额扣除失败。请联系管理员。"
+                    )
+                    # Still proceed with fulfillment
+                else:
+                    logger.info(f"Balance deducted, new balance: ${new_balance:.4f}")
+            
             # Update order status
             db.update_order_status(order_id, 'paid', tx_hash)
             utils.log_payment_action(tx_hash, "Verified", f"Order {order_id}")
             
-            # Get order details
-            order = db.get_order(order_id)
-            
             # Determine recipient
             recipient_id = order.get('recipient_id') or user_id
+            recipient_username = order.get('recipient_username')
+            
+            # If we only have username, try to resolve to ID using Telethon
+            if not recipient_id and recipient_username:
+                logger.info(f"Attempting Telethon resolution for recipient @{recipient_username}")
+                try:
+                    resolver = await get_resolver()
+                    if resolver:
+                        telethon_info = await resolver.resolve_username(recipient_username)
+                        if telethon_info:
+                            recipient_id = telethon_info['user_id']
+                            logger.info(f"✅ Telethon resolved @{recipient_username} to user_id {recipient_id}")
+                except Exception as e:
+                    logger.warning(f"Error during Telethon resolution: {e}")
+            
+            # If still no recipient_id, use buyer's ID as fallback
+            if not recipient_id:
+                logger.warning(f"No recipient_id available for order {order_id}, using buyer's ID")
+                recipient_id = user_id
             
             # Process based on product type
             if order['product_type'] == PRODUCT_TYPE_PREMIUM:
@@ -2903,7 +3401,7 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                     db.update_order_status(order_id, 'completed')
                     
                     # Create gift record if applicable
-                    if order.get('recipient_id'):
+                    if order.get('recipient_id') or order.get('recipient_username'):
                         db.create_gift_record(
                             order_id,
                             user_id,
@@ -2913,6 +3411,10 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                         )
                     
                     success_msg = f"✅ 支付成功！\n\n💎 {order['months']} 个月 Telegram Premium 已开通！\n"
+                    
+                    if balance_to_use > 0:
+                        success_msg += f"💰 使用余额：${balance_to_use:.4f}\n"
+                        success_msg += f"💳 链上支付：${order.get('remaining_amount', 0):.4f}\n"
                     
                     if order.get('recipient_username'):
                         success_msg += f"🎁 已赠送给：@{order['recipient_username']}\n"
@@ -2951,13 +3453,18 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                     utils.log_order_action(order_id, "Paid-NeedsRetry", f"Premium gifting failed, attempt {retry_count}")
             
             elif order['product_type'] == PRODUCT_TYPE_STARS:
-                # For now, just mark as completed (stars functionality would need implementation)
+                # Mark as completed
                 db.update_order_status(order_id, 'completed')
+                
+                success_msg = f"✅ 支付成功！\n\n⭐ {order['product_quantity']} Telegram Stars 已充值！\n"
+                if balance_to_use > 0:
+                    success_msg += f"💰 使用余额：${balance_to_use:.4f}\n"
+                    success_msg += f"💳 链上支付：${order.get('remaining_amount', 0):.4f}\n"
+                success_msg += f"📝 交易哈希：`{tx_hash}`\n\n感谢您的购买！"
+                
                 await bot.send_message(
                     chat_id=chat_id,
-                    text=f"✅ 支付成功！\n\n⭐ {order['product_quantity']} Telegram Stars 已充值！\n"
-                         f"📝 交易哈希：`{tx_hash}`\n\n"
-                         f"感谢您的购买！",
+                    text=success_msg,
                     parse_mode='Markdown'
                 )
                 utils.log_order_action(order_id, "Completed", f"{order['product_quantity']} stars")
@@ -3027,8 +3534,12 @@ async def verify_payment(query, order_id: str):
     
     logger.debug(f"Order details - ID: {order_id}, Price: ${order['price']:.4f}, Type: {order['product_type']}")
     
-    await query.edit_message_text(
-        "🔍 正在验证支付...\n\n这可能需要几分钟，请稍候。\n我们会在验证完成后通知您。"
+    # Get the amount to check for (remaining_amount if using balance, otherwise price)
+    amount_to_check = order.get('remaining_amount', order['price'])
+    
+    await safe_edit_message(
+        query.message,
+        text="🔍 正在验证支付...\n\n这可能需要几分钟，请稍候。\n我们会在验证完成后通知您。"
     )
     
     # Check for recent transactions
@@ -3047,17 +3558,17 @@ async def verify_payment(query, order_id: str):
             )
             return
         
-        logger.info(f"Checking {len(transactions)} recent transactions for order {order_id}")
+        logger.info(f"Checking {len(transactions)} recent transactions for order {order_id}, looking for ${amount_to_check:.4f}")
         
         if transactions:
             for tx in transactions:
                 # Check if amount matches (precise to 4 decimals)
                 tx_amount = float(tx.get('value', 0)) / (10 ** tx.get('token_info', {}).get('decimals', 6))
                 
-                logger.debug(f"Checking TX {tx.get('transaction_id', '')[:8]}... - Amount: ${tx_amount:.4f} vs Expected: ${order['price']:.4f}")
+                logger.debug(f"Checking TX {tx.get('transaction_id', '')[:8]}... - Amount: ${tx_amount:.4f} vs Expected: ${amount_to_check:.4f}")
                 
                 # Use tighter tolerance for unique amounts (0.00001 = 1/100 of smallest increment)
-                if abs(tx_amount - order['price']) < 0.00001:
+                if abs(tx_amount - amount_to_check) < 0.00001:
                     tx_hash = tx.get('transaction_id')
                     logger.info(f"Found matching transaction: {tx_hash}")
                     
@@ -3081,6 +3592,18 @@ async def verify_payment(query, order_id: str):
                         utils.log_order_action(order_id, "Failed", "Fake USDT detected")
                         return
                     
+                    # Deduct balance if this order uses partial balance
+                    balance_to_use = order.get('balance_to_use', 0.0)
+                    if balance_to_use > 0:
+                        logger.info(f"Deducting balance ${balance_to_use:.4f} for order {order_id}")
+                        new_balance = db.update_user_balance(order['user_id'], balance_to_use, operation='subtract')
+                        if new_balance is None:
+                            logger.error(f"Failed to deduct balance for order {order_id}")
+                            await query.message.reply_text("⚠️ 链上支付已确认，但余额扣除失败。请联系管理员。")
+                            # Still proceed with fulfillment
+                        else:
+                            logger.info(f"Balance deducted, new balance: ${new_balance:.4f}")
+                    
                     # Record transaction
                     logger.info(f"Recording transaction {tx_hash} for order {order_id}")
                     db.create_transaction(tx_hash, order_id, tx_amount, tx.get('from'))
@@ -3089,6 +3612,25 @@ async def verify_payment(query, order_id: str):
                     
                     # Determine recipient
                     recipient_id = order.get('recipient_id') or order['user_id']
+                    recipient_username = order.get('recipient_username')
+                    
+                    # If we only have username, try to resolve to ID using Telethon
+                    if not recipient_id and recipient_username:
+                        logger.info(f"Attempting Telethon resolution for recipient @{recipient_username}")
+                        try:
+                            resolver = await get_resolver()
+                            if resolver:
+                                telethon_info = await resolver.resolve_username(recipient_username)
+                                if telethon_info:
+                                    recipient_id = telethon_info['user_id']
+                                    logger.info(f"✅ Telethon resolved @{recipient_username} to user_id {recipient_id}")
+                        except Exception as e:
+                            logger.warning(f"Error during Telethon resolution: {e}")
+                    
+                    # If still no recipient_id, use buyer's ID as fallback
+                    if not recipient_id:
+                        logger.warning(f"No recipient_id available for order {order_id}, using buyer's ID")
+                        recipient_id = order['user_id']
                     
                     # Gift Premium or Stars
                     if order['product_type'] == PRODUCT_TYPE_PREMIUM:
@@ -3100,7 +3642,7 @@ async def verify_payment(query, order_id: str):
                             logger.info(f"✅ Order {order_id} completed successfully")
                             
                             # Create gift record if applicable
-                            if order.get('recipient_id'):
+                            if order.get('recipient_id') or order.get('recipient_username'):
                                 db.create_gift_record(
                                     order_id,
                                     order['user_id'],
@@ -3109,9 +3651,13 @@ async def verify_payment(query, order_id: str):
                                     order['months']
                                 )
                             
-                            await query.message.reply_text(
-                                f"✅ 支付验证成功！\n\n💎 {order['months']} 个月 Premium 已开通！\n感谢您的购买！"
-                            )
+                            success_msg = f"✅ 支付验证成功！\n\n💎 {order['months']} 个月 Premium 已开通！\n"
+                            if balance_to_use > 0:
+                                success_msg += f"💰 使用余额：${balance_to_use:.4f}\n"
+                                success_msg += f"💳 链上支付：${order.get('remaining_amount', 0):.4f}\n"
+                            success_msg += "\n感谢您的购买！"
+                            
+                            await query.message.reply_text(success_msg)
                             utils.log_order_action(order_id, "Completed", "Premium gifted")
                         else:
                             # Keep order as 'paid' for manual retry, track error
@@ -3136,9 +3682,14 @@ async def verify_payment(query, order_id: str):
                     elif order['product_type'] == PRODUCT_TYPE_STARS:
                         db.update_order_status(order_id, 'completed')
                         logger.info(f"✅ Stars order {order_id} completed")
-                        await query.message.reply_text(
-                            f"✅ 支付验证成功！\n\n⭐ {order['product_quantity']} Stars 已充值！\n感谢您的购买！"
-                        )
+                        
+                        success_msg = f"✅ 支付验证成功！\n\n⭐ {order['product_quantity']} Stars 已充值！\n"
+                        if balance_to_use > 0:
+                            success_msg += f"💰 使用余额：${balance_to_use:.4f}\n"
+                            success_msg += f"💳 链上支付：${order.get('remaining_amount', 0):.4f}\n"
+                        success_msg += "\n感谢您的购买！"
+                        
+                        await query.message.reply_text(success_msg)
                         utils.log_order_action(order_id, "Completed", f"{order['product_quantity']} stars")
                     elif order['product_type'] == PRODUCT_TYPE_RECHARGE:
                         # Handle balance recharge
@@ -3174,7 +3725,7 @@ async def verify_payment(query, order_id: str):
             "3. ✓ 使用了 TRC20 网络\n"
             "4. ✓ 转账地址正确\n\n"
             "💡 区块链确认通常需要 1-3 分钟\n"
-            "如果您刚刚完成支付，请稍后再试。".format(order['price'])
+            "如果您刚刚完成支付，请稍后再试。".format(amount_to_check)
         )
         
     except Exception as e:
@@ -3539,6 +4090,22 @@ def main():
     """Start the bot"""
     # Create application
     application = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+    
+    # Add startup callback to log bot identity
+    async def post_init(app: Application) -> None:
+        """Log bot identity on startup"""
+        try:
+            bot = await app.bot.get_me()
+            logger.info("=" * 60)
+            logger.info("🤖 Bot Identity:")
+            logger.info(f"   Bot ID: {bot.id}")
+            logger.info(f"   Bot Username: @{bot.username}")
+            logger.info(f"   Bot Name: {bot.first_name}")
+            logger.info("=" * 60)
+        except Exception as e:
+            logger.error(f"Failed to get bot identity: {e}")
+    
+    application.post_init = post_init
     
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
