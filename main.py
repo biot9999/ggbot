@@ -1618,20 +1618,13 @@ class FragmentAutomationWrapper:
         async with self._lock:
             if not self._initialized or self.premium is None:
                 try:
-                    # Check if TELEGRAM_PHONE is configured
-                    if not config.TELEGRAM_PHONE or config.TELEGRAM_PHONE == '+8613800138000':
-                        logger.warning("TELEGRAM_PHONE not configured in .env file")
-                        return False
+                    # Initialize FragmentPremium with config file
+                    self.premium = FragmentPremium('fragment_auth.json')
                     
-                    # Initialize FragmentPremium
-                    self.premium = FragmentPremium(
-                        config.TELEGRAM_API_ID,
-                        config.TELEGRAM_API_HASH,
-                        config.TELEGRAM_PHONE
-                    )
-                    
-                    # Try to initialize (login + get auth)
-                    success = await self.premium.initialize()
+                    # Try to initialize (load auth from config)
+                    # Run synchronous initialize in executor to avoid blocking
+                    loop = asyncio.get_event_loop()
+                    success = await loop.run_in_executor(None, self.premium.initialize)
                     
                     if success:
                         self._initialized = True
@@ -1639,6 +1632,13 @@ class FragmentAutomationWrapper:
                         return True
                     else:
                         logger.error("❌ Fragment Premium initialization failed")
+                        logger.error("")
+                        logger.error("📝 请配置 Fragment 认证：")
+                        logger.error("1. 复制 fragment_auth.json.example 为 fragment_auth.json")
+                        logger.error("2. 在浏览器登录 https://fragment.com")
+                        logger.error("3. 从开发者工具获取 hash 和 cookies")
+                        logger.error("4. 填入 fragment_auth.json")
+                        logger.error("")
                         return False
                         
                 except Exception as e:
@@ -1651,39 +1651,39 @@ class FragmentAutomationWrapper:
     async def check_playwright_dependencies():
         """
         Compatibility method - no longer checks Playwright dependencies
-        Always returns success since we don't need browser anymore
+        Always returns success since we don't need browser or Telethon login anymore
         
         Returns:
             tuple: (True, None) - always succeeds
         """
-        logger.info("ℹ️ Using API-based Fragment integration (no browser required)")
+        logger.info("ℹ️ Using manual auth Fragment integration (no browser/Telethon required)")
         return True, None
     
     async def login_with_telegram(self, max_retries=2):
         """
-        Login to Telegram and get Fragment authentication
+        Initialize Fragment with manual authentication
         
         Args:
             max_retries: Not used, kept for compatibility
             
         Returns:
-            bool: True if login successful
+            bool: True if initialization successful
         """
         try:
-            logger.info("🔐 开始 Telegram 登录流程...")
+            logger.info("🔐 开始 Fragment 初始化...")
             
-            # Initialize (which includes login)
+            # Initialize (which loads auth from config)
             success = await self._ensure_initialized()
             
             if success:
-                logger.info("✅ Telegram 登录成功")
+                logger.info("✅ Fragment 初始化成功")
                 return True
             else:
-                logger.error("❌ Telegram 登录失败")
+                logger.error("❌ Fragment 初始化失败")
                 return False
                 
         except Exception as e:
-            logger.error(f"❌ 登录错误: {e}", exc_info=True)
+            logger.error(f"❌ 初始化错误: {e}", exc_info=True)
             return False
     
     async def restore_session(self):
@@ -1698,7 +1698,8 @@ class FragmentAutomationWrapper:
     
     async def get_balance(self):
         """
-        Get Fragment account balance
+        Get Fragment account balance - compatibility method
+        Note: Balance API may not be available, returns None
         
         Returns:
             float: Balance in TON, or None if failed
@@ -1708,8 +1709,9 @@ class FragmentAutomationWrapper:
                 logger.error("❌ Fragment not initialized")
                 return None
             
-            balance = await self.premium.get_balance()
-            return balance
+            # Balance API doesn't exist in Fragment, return None
+            logger.warning("⚠️ Fragment balance API is not available")
+            return None
             
         except Exception as e:
             logger.error(f"❌ Error getting balance: {e}", exc_info=True)
@@ -1738,8 +1740,14 @@ class FragmentAutomationWrapper:
                         continue
                     return False
                 
-                # Call the API to gift premium
-                result = await self.premium.gift_premium(user_id, months)
+                # Call the API to gift premium (run synchronous method in executor)
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None, 
+                    self.premium.gift_premium, 
+                    user_id, 
+                    months
+                )
                 
                 if result.get('ok'):
                     logger.info(f"✅ Successfully gifted {months} months Premium to user {user_id}")

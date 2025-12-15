@@ -17,9 +17,8 @@
 - ❌ /cancel 命令随时取消当前操作
 
 ### 管理员端功能
-- 🔐 Telegram 登录认证（使用 Telethon）
+- 🔐 手动认证方式（避免账号冻结）
 - 🌐 纯 API 调用 Fragment.com（无需浏览器）
-- 💰 自动检查 Fragment 账户余额
 - 📊 完整的统计面板（订单、收入、用户统计）
 - 🎁 自动调用 Fragment API 赠送 Premium
 - 💵 会员和 Stars 价格可由管理员自定义设置
@@ -56,8 +55,6 @@
 ### 后端框架
 - **Python 3.8+**
 - **python-telegram-bot** - Telegram Bot API
-- **Telethon** - Telegram 客户端库（用于 Fragment 认证）
-- **aiohttp** - 异步 HTTP 请求
 - **MongoDB** - 数据库
 - **requests** - Fragment API 调用
 
@@ -104,13 +101,6 @@ TELEGRAM_BOT_TOKEN=your_bot_token_here
 
 # 管理员用户 ID（多个用逗号分隔）
 ADMIN_USER_IDS=123456789,987654321
-
-# Telegram API 配置（用于 Fragment 认证）
-# 默认值为公共 API，无需申请
-TELEGRAM_API_ID=2040
-TELEGRAM_API_HASH=b18441a1ff607e10a989891a5462e627
-# 你的手机号（国际格式，如 +8613800138000）
-TELEGRAM_PHONE=+8613800138000
 
 # MongoDB 配置
 MONGODB_URI=mongodb://localhost:27017
@@ -208,41 +198,181 @@ sudo systemctl status telegram-premium-bot
 3. 将 API Key 填入 `.env`（免费版限制较多，建议使用）
 
 ### 5. 配置 Fragment 认证
-1. 首次启动机器人后，使用管理员账号发送 `/login`
-2. 按提示输入 Telegram 验证码（从 Telegram 接收）
-3. 登录成功后，session 会自动保存，无需重复登录
 
-> **注意**: 
-> - 首次登录需要输入手机验证码
-> - Session 保存后，后续无需再次验证
-> - 使用纯 API 方式，无需浏览器操作
+本项目采用**手动认证模式**来避免账号冻结风险。
+
+#### 为什么使用手动认证？
+
+- ✅ **避免账号冻结**：不使用 Telethon 完整登录，不会触发 Telegram 反滥用机制
+- ✅ **无需验证码**：只需在浏览器点击确认，符合 Fragment 正常登录流程
+- ✅ **长期稳定**：认证数据可长期使用，无需频繁重新登录
+- ✅ **安全可控**：完全手动控制，认证数据本地保存
+
+#### 📖 获取 Fragment 认证数据
+
+**步骤 1：在浏览器登录 Fragment**
+
+1. 访问 https://fragment.com
+2. 点击右上角 **"Login"** 按钮
+3. Telegram 会收到登录确认请求
+4. 在 Telegram 中点击 **"Confirm"** 确认登录
+5. ✅ 登录成功
+
+**步骤 2：打开浏览器开发者工具**
+
+- **Chrome/Edge**: 按 `F12` 或 `Ctrl+Shift+I`（Windows）/ `Cmd+Option+I`（Mac）
+- **Firefox**: 按 `F12`
+- **Safari**: 按 `Cmd+Option+I`（需先在偏好设置中启用开发者菜单）
+
+**步骤 3：获取 Cookies**
+
+1. 在开发者工具中点击 **"Application"**（应用程序）或 **"Storage"**（存储）标签
+2. 左侧菜单选择 **"Cookies"** → `https://fragment.com`
+3. 找到并复制以下 cookie 的值：
+   - `stel_ssid` - Session ID
+   - `stel_token` 或 `stel_ton_token` - Token
+   - `stel_dt` - 时区偏移（通常是 `-480`）
+
+**步骤 4：获取 Hash**
+
+**方法一：从 Network 请求中获取**
+
+1. 点击 **"Network"**（网络）标签
+2. 刷新页面（`F5`）
+3. 在请求列表中查找 `api?hash=...` 的请求
+4. 点击该请求，查看 URL 中的 `hash` 参数
+5. 复制 `hash` 的值
+
+**方法二：从 Console 获取（如果可用）**
+
+1. 点击 **"Console"**（控制台）标签
+2. 输入 `document.cookie` 并回车
+3. 查找并复制相关 cookie 值
+
+**步骤 5：创建配置文件**
+
+```bash
+# 复制示例文件
+cp fragment_auth.json.example fragment_auth.json
+
+# 编辑配置
+nano fragment_auth.json
+```
+
+填入刚才获取的值：
+
+```json
+{
+  "hash": "你复制的完整hash值",
+  "cookies": {
+    "stel_ssid": "你复制的stel_ssid值",
+    "stel_token": "你复制的token值",
+    "stel_dt": "-480"
+  },
+  "headers": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Origin": "https://fragment.com",
+    "Referer": "https://fragment.com/"
+  }
+}
+```
+
+**步骤 6：测试配置**
+
+```bash
+# 激活虚拟环境
+source venv/bin/activate  # Linux/Mac
+# 或
+venv\Scripts\activate  # Windows
+
+# 运行测试脚本
+python test_fragment_auth.py
+```
+
+如果配置正确，应该显示：
+
+```
+✅ 认证数据加载成功
+✅ 连接成功！
+🎉 Fragment 认证配置正确，可以正常使用
+```
+
+#### ⚠️ 注意事项
+
+1. **保护敏感数据**
+   - 🔒 **切勿提交** `fragment_auth.json` 到 Git
+   - 🔒 不要分享你的 hash 和 cookies
+   - 🔒 定期更换认证数据以提高安全性
+
+2. **认证过期处理**
+   - 如果认证过期（通常几周到几个月），重新从浏览器获取即可
+   - 机器人会提示认证失败，按上述步骤重新配置
+
+3. **多账号配置**
+   - 如需使用不同账号，创建不同的配置文件（如 `fragment_auth_account2.json`）
+   - 在代码中指定不同的配置文件路径
+
+#### 🔧 故障排除
+
+**问题：认证数据加载失败**
+
+```
+❌ 认证文件不存在: fragment_auth.json
+```
+
+**解决：** 确保 `fragment_auth.json` 文件存在且格式正确
+
+---
+
+**问题：连接测试失败**
+
+```
+❌ Fragment 连接测试失败
+```
+
+**可能原因：**
+- 认证数据已过期 → 重新从浏览器获取
+- 网络问题 → 检查服务器是否能访问 fragment.com
+- Fragment 服务暂时不可用 → 稍后重试
+
+---
+
+**问题：API 调用返回 Bad Request**
+
+```
+API Response: {'error': 'Bad request'}
+```
+
+**可能原因：**
+- Hash 或 cookies 不正确 → 重新复制，确保完整无误
+- 认证已过期 → 重新登录并获取新数据
 
 ## 🎁 Fragment 会员开通功能
 
 ### 特点
+- ✅ 使用手动认证，避免账号冻结
 - ✅ 纯 API 调用，无需浏览器
-- ✅ 无系统依赖，只需 Python 包
-- ✅ 首次登录后自动保存 session
+- ✅ 无需验证码，符合正常登录流程
 - ✅ 支持自动开通和赠送会员
 - ✅ 速度快，资源占用少
-- ✅ 稳定可靠，不受页面变化影响
+- ✅ 认证数据长期有效
 
 ### 技术架构
-使用 **Telethon + Fragment API** 纯 API 方式：
+使用**手动认证 + Fragment API** 方式：
 
 ```
-用户 → Telegram 登录 → Fragment Web App 认证 → 获取 hash/token → 调用 API
+浏览器登录 → 获取认证数据 → 保存到配置文件 → 机器人使用认证调用 API
 ```
 
 ### 优势对比
 
-| 特性 | 旧方案（Playwright） | 新方案（API） |
-|------|---------------------|--------------|
-| 浏览器依赖 | ❌ 需要 Chromium (~300MB) | ✅ 无需浏览器 |
-| 系统依赖 | ❌ 需要 nss、cups、gtk3 等 | ✅ 无系统依赖 |
-| 资源占用 | ❌ 大（浏览器进程） | ✅ 小（纯 Python） |
-| 稳定性 | ⚠️ 页面更新可能导致失效 | ✅ API 稳定 |
-| 速度 | 🐌 较慢 | ⚡ 快速 |
+| 特性 | Telethon 登录 | 手动认证（新方案） |
+|------|--------------|-------------------|
+| 需要验证码 | ❌ 是 | ✅ 否 |
+| 账号冻结风险 | 🔴 高 | 🟢 极低 |
+| 配置复杂度 | 🟡 中等 | 🟢 简单 |
+| 认证稳定性 | 🟡 需定期重新登录 | 🟢 长期有效 |
+| 用户体验 | 🟡 需要输入验证码 | 🟢 仅需浏览器点击确认 |
 
 ## 🔒 安全特性
 
