@@ -91,22 +91,28 @@ class FragmentPremium:
             raise Exception("未初始化，请先调用 initialize()")
         
         logger.info(f"🎁 开始为 User ID {user_id} 开通 {months} 个月会员...")
+        logger.debug(f"   Gift details - User ID: {user_id}, Months: {months}, Type: {type(user_id)}, Type months: {type(months)}")
         
         # 尝试方法1: 使用 user_id 直接赠送
+        logger.info("尝试方法1: gift_premium_by_user_id")
         result = self.api.gift_premium_by_user_id(user_id, months)
         
         if result.get('ok'):
             logger.info(f"✅ 会员开通成功！User ID: {user_id}, 月数: {months}")
             return result
+        else:
+            logger.warning(f"⚠️ 方法1失败: {result.get('error', 'Unknown error')}")
         
         # 如果方法1失败，尝试方法2: 使用 updatePremiumState
-        logger.info("尝试备用方法...")
+        logger.info("尝试方法2: updatePremiumState")
         result = self.api.update_premium_state(mode='new', months=months, recipient=str(user_id))
         
         if result.get('ok'):
             logger.info(f"✅ 会员开通成功（备用方法）！User ID: {user_id}, 月数: {months}")
         else:
-            logger.error(f"❌ 会员开通失败: {result.get('error', 'Unknown error')}")
+            logger.error(f"❌ 会员开通失败（所有方法均失败）: {result.get('error', 'Unknown error')}")
+            logger.error(f"   尝试的方法: 1) gift_premium_by_user_id 2) updatePremiumState")
+            logger.error(f"   建议: 检查 fragment_auth.json 中的认证数据是否过期")
         
         return result
     
