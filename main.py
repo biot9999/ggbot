@@ -3425,8 +3425,14 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 except Exception as e:
                     logger.error(f"Error resolving user_id to username: {e}", exc_info=True)
                     await update.message.reply_text(
-                        "❌ **解析用户信息失败**\n\n"
-                        "请直接使用对方的 **@username** 进行赠送。\n\n"
+                        "❌ **无法通过 User ID 查找用户**\n\n"
+                        "**原因：**\n"
+                        "系统无法访问该用户的信息（用户可能未与 Bot 互动过）\n\n"
+                        "**解决方法：**\n"
+                        "请直接使用对方的 **@username** 进行赠送\n\n"
+                        "💡 如何获取 username：\n"
+                        "• 在对方的个人资料中查看\n"
+                        "• 使用 @ 提及功能（会显示为蓝色链接）\n\n"
                         "或点击取消按钮取消操作",
                         reply_markup=keyboards.get_cancel_keyboard(),
                         parse_mode='Markdown'

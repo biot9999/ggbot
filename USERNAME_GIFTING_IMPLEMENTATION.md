@@ -68,6 +68,17 @@ When a user wants to gift Premium:
    - Bot extracts the username from the mention entity
    - Validates and proceeds
 
+**⚠️ Important Telethon Limitation:**
+
+Telethon can only resolve user IDs that it has encountered before in chats/channels that the session has access to. This is a fundamental Telegram API limitation, not a bug.
+
+- **Why it happens**: Telegram's API requires that clients have previously "seen" a user in a mutual chat/channel before they can look them up by ID
+- **Impact**: If a user provides a numeric ID for someone the bot hasn't interacted with, resolution will fail
+- **Solution**: The bot will show a clear error message asking the user to provide @username instead
+- **Not fixable**: No amount of session rotation or retry logic can resolve an unseen user ID
+
+This is why the username-only approach is strongly recommended - usernames can always be resolved regardless of prior interaction.
+
 ### 4. Order Data Structure
 
 Orders now store:

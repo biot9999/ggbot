@@ -86,6 +86,27 @@ Bot rejects with error message:
 User must get recipient to set username
 ```
 
+### Example 4: Numeric ID Not in Telethon Cache
+```
+User inputs: 5611529170
+  ↓
+Bot attempts resolution via Telethon
+  ↓
+User not found in session cache ❌
+(Telethon limitation: can only resolve IDs seen before)
+  ↓
+Bot rejects with error message:
+"无法通过 User ID 查找用户
+系统无法访问该用户的信息（用户可能未与 Bot 互动过）
+请直接使用对方的 @username 进行赠送"
+  ↓
+User must provide @username instead
+```
+
+**⚠️ Telethon Limitation Explained:**
+
+Telethon can only resolve user IDs that it has previously encountered in chats/channels accessible to its sessions. This is a Telegram API limitation - not a bug. The bot cannot look up arbitrary user IDs without prior interaction. This is why @username is the recommended and most reliable input method.
+
 ## Payment & Fulfillment Sequence
 
 ### Balance-First Strategy (Preserved)

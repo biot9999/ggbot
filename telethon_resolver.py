@@ -254,6 +254,14 @@ class TelethonResolver:
         """
         Resolve user ID to user information
         
+        **Important Telethon Limitation:**
+        Telethon can only resolve user IDs that it has encountered before in chats/channels
+        that the session has access to. If a user_id hasn't been seen by any session,
+        this method will return None with a "Could not find the input entity" error.
+        
+        This is NOT a bug - it's a Telegram API limitation. For gifting, users should
+        always provide @username instead of numeric user_id.
+        
         Args:
             user_id: Telegram user ID
             
@@ -296,6 +304,22 @@ class TelethonResolver:
                     logger.error("Failed to rotate to another session")
                     return None
                 retry_count += 1
+            except ValueError as e:
+                # Check if this is the "Could not find the input entity" error
+                if "Could not find the input entity" in str(e):
+                    logger.warning(f"❌ Telethon: User ID {user_id} not found in session cache (entity not accessible)")
+                    # This is a permanent error - the entity doesn't exist in this session's cache
+                    # No point rotating, just return None
+                    return None
+                else:
+                    # Other ValueError, treat as generic error
+                    logger.error(f"❌ Telethon: ValueError resolving user_id {user_id}: {e}", exc_info=True)
+                    # Try rotating session on error
+                    if retry_count < max_retries - 1:
+                        if await self._rotate_session():
+                            retry_count += 1
+                            continue
+                    return None
             except Exception as e:
                 logger.error(f"❌ Telethon: Error resolving user_id {user_id}: {e}", exc_info=True)
                 # Try rotating session on error
