@@ -24,7 +24,6 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 from pymongo import MongoClient
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -37,6 +36,9 @@ from telegram.ext import (
 
 # Configuration module is kept separate
 import config
+
+# Import Fragment modules
+from fragment_premium import FragmentPremium
 
 # ============================================================================
 # CONSTANTS
@@ -1599,585 +1601,123 @@ tron_payment = TronPayment()
 # FRAGMENT MODULE (Fragment.com Integration)
 # ============================================================================
 
-class FragmentAutomation:
-    # Fragment URL constants
-    FRAGMENT_URLS = ['https://fragment.com', 'https://www.fragment.com']
-    FRAGMENT_BASE_PATHS = ['https://fragment.com/', 'https://www.fragment.com/']
-    
-    # Browser launch arguments for stability in headless mode
-    BROWSER_ARGS = [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',  # Prevent shared memory issues
-        '--disable-gpu'  # Headless mode doesn't need GPU
-    ]
+class FragmentAutomationWrapper:
+    """
+    Wrapper class for FragmentPremium to maintain compatibility with existing code
+    Uses Telethon + Fragment API instead of Playwright browser automation
+    """
     
     def __init__(self):
-        self.session_file = config.FRAGMENT_SESSION_FILE
-        self.playwright = None
-        self.browser = None
-        self.context = None
-        self.page = None
+        """Initialize Fragment automation wrapper"""
+        self.premium = None
+        self._initialized = False
+        self._lock = asyncio.Lock()
+    
+    async def _ensure_initialized(self):
+        """Ensure FragmentPremium is initialized"""
+        async with self._lock:
+            if not self._initialized or self.premium is None:
+                try:
+                    # Check if TELEGRAM_PHONE is configured
+                    if not config.TELEGRAM_PHONE or config.TELEGRAM_PHONE == '+8613800138000':
+                        logger.warning("TELEGRAM_PHONE not configured in .env file")
+                        return False
+                    
+                    # Initialize FragmentPremium
+                    self.premium = FragmentPremium(
+                        config.TELEGRAM_API_ID,
+                        config.TELEGRAM_API_HASH,
+                        config.TELEGRAM_PHONE
+                    )
+                    
+                    # Try to initialize (login + get auth)
+                    success = await self.premium.initialize()
+                    
+                    if success:
+                        self._initialized = True
+                        logger.info("✅ Fragment Premium initialized successfully")
+                        return True
+                    else:
+                        logger.error("❌ Fragment Premium initialization failed")
+                        return False
+                        
+                except Exception as e:
+                    logger.error(f"❌ Error initializing Fragment Premium: {e}", exc_info=True)
+                    return False
+            
+            return True
     
     @staticmethod
     async def check_playwright_dependencies():
         """
-        Check if Playwright dependencies are installed
+        Compatibility method - no longer checks Playwright dependencies
+        Always returns success since we don't need browser anymore
         
         Returns:
-            tuple: (success: bool, error_type: str or None)
+            tuple: (True, None) - always succeeds
         """
-        try:
-            from playwright.async_api import async_playwright
-            # Just check if we can create the playwright instance and access chromium
-            # Don't actually launch browser (expensive and unnecessary)
-            async with async_playwright() as p:
-                # Try to get the executable path - this will fail if dependencies missing
-                try:
-                    _ = p.chromium.executable_path
-                    return True, None
-                except Exception as e:
-                    error_str = str(e).lower()
-                    if "looks like playwright" in error_str or "browser" in error_str:
-                        return False, "missing_browser"
-                    return False, str(e)
-        except ImportError as e:
-            return False, f"No module named 'playwright'"
-        except Exception as e:
-            error_str = str(e).lower()
-            if "missing dependencies" in error_str or "host system" in error_str:
-                return False, "missing_deps"
-            elif "executable" in error_str or "browser" in error_str:
-                return False, "missing_browser"
-            return False, str(e)
-    
-    async def init_browser(self):
-        """Initialize Playwright browser"""
-        if not self.playwright:
-            self.playwright = await async_playwright().start()
-            
-            # Use Playwright's bundled Chromium browser
-            try:
-                self.browser = await self.playwright.chromium.launch(
-                    headless=True,
-                    args=self.BROWSER_ARGS
-                )
-                logger.info("Using Chromium browser for Fragment automation")
-            except Exception as e:
-                error_msg = str(e)
-                if "Executable doesn't exist" in error_msg or "browser" in error_msg.lower():
-                    logger.error("❌ Chromium 未安装，请运行：playwright install chromium")
-                    raise RuntimeError("Chromium browser not installed. Please run: playwright install chromium") from e
-                raise
-    
-    async def load_session(self):
-        """Load saved session"""
-        try:
-            with open(self.session_file, 'r') as f:
-                session_data = json.load(f)
-                return session_data
-        except FileNotFoundError:
-            logger.info("No saved session found")
-            return None
-        except Exception as e:
-            logger.error(f"Error loading session: {e}")
-            return None
-    
-    async def save_session(self, cookies, storage_state):
-        """Save session to file"""
-        try:
-            session_data = {
-                'cookies': cookies,
-                'storage_state': storage_state
-            }
-            with open(self.session_file, 'w') as f:
-                json.dump(session_data, f)
-            logger.info("Session saved successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error saving session: {e}")
-            return False
-    
-    @staticmethod
-    def _save_debug_file(content, prefix, suffix, mode='w'):
-        """
-        Safely save debug files with random suffix to prevent symlink attacks
-        
-        Args:
-            content: Content to save (str or bytes)
-            prefix: File prefix (e.g., 'fragment_page')
-            suffix: File suffix (e.g., '.html' or '.png')
-            mode: File mode ('w' for text, 'wb' for binary)
-        
-        Returns:
-            Path to saved file or None if failed
-        """
-        try:
-            # Create temp file with random suffix in /tmp
-            fd, filepath = tempfile.mkstemp(suffix=suffix, prefix=f"{prefix}_", dir='/tmp')
-            try:
-                if mode == 'wb':
-                    os.write(fd, content)
-                else:
-                    os.write(fd, content.encode('utf-8'))
-            finally:
-                os.close(fd)
-            logger.info(f"Saved debug file to {filepath}")
-            return filepath
-        except Exception as e:
-            logger.debug(f"Could not save debug file: {e}")
-            return None
-    
-    @staticmethod
-    def _get_temp_path(prefix, suffix):
-        """
-        Get a temporary file path with random component to prevent symlink attacks
-        
-        Args:
-            prefix: File prefix (e.g., 'fragment_screenshot')
-            suffix: File suffix (e.g., '.png')
-        
-        Returns:
-            Path to temp file
-        """
-        try:
-            # Use mkstemp to create file securely, but note: playwright will overwrite it
-            # This is acceptable since we've claimed the filename already
-            fd, filepath = tempfile.mkstemp(suffix=suffix, prefix=f"{prefix}_", dir='/tmp')
-            os.close(fd)  # Close immediately, playwright will write to this path
-            return filepath
-        except Exception as e:
-            logger.debug(f"Could not create temp path: {e}")
-            # Fallback to /tmp with larger random range for better security
-            timestamp = int(time.time() * 1000)  # millisecond precision
-            random_part = random.randint(100000, 999999)
-            return f"/tmp/{prefix}_{timestamp}_{random_part}{suffix}"
+        logger.info("ℹ️ Using API-based Fragment integration (no browser required)")
+        return True, None
     
     async def login_with_telegram(self, max_retries=2):
         """
-        Interactive login with Telegram
-        Supports both QR code scanning and phone number login
-        Returns True if login successful
+        Login to Telegram and get Fragment authentication
         
         Args:
-            max_retries: Maximum number of retry attempts (default: 2)
+            max_retries: Not used, kept for compatibility
+            
+        Returns:
+            bool: True if login successful
         """
-        for retry_attempt in range(max_retries):
-            try:
-                if retry_attempt > 0:
-                    logger.info(f"Retry attempt {retry_attempt + 1}/{max_retries}")
-                    # Clear cookies and cache between retries
-                    if self.context:
-                        await self.context.clear_cookies()
-                    await asyncio.sleep(3)
-                
-                await self.init_browser()
-                
-                self.context = await self.browser.new_context(
-                    viewport={'width': 1280, 'height': 720},
-                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                )
-                self.page = await self.context.new_page()
-                
-                # Try both fragment.com and www.fragment.com
-                url = self.FRAGMENT_URLS[retry_attempt % len(self.FRAGMENT_URLS)]
-                
-                # Navigate to Fragment
-                logger.info(f"Navigating to {url}...")
-                await self.page.goto(url, wait_until='networkidle', timeout=30000)
-                current_url = self.page.url
-                logger.info(f"Current page URL: {current_url}")
-                await asyncio.sleep(3)
-                
-                # Save initial page state for debugging
-                try:
-                    html_content = await self.page.content()
-                    self._save_debug_file(html_content, 'fragment_page_initial', '.html')
-                except Exception as e:
-                    logger.debug(f"Could not save HTML: {e}")
-                
-                # Log all clickable elements for debugging
-                try:
-                    buttons = await self.page.query_selector_all('button, a')
-                    logger.info(f"Found {len(buttons)} clickable elements on page")
-                    # Log first few button texts
-                    for i, btn in enumerate(buttons[:10]):
-                        try:
-                            text = await btn.text_content()
-                            if text and text.strip():
-                                logger.debug(f"Button {i}: '{text.strip()}'")
-                        except Exception:
-                            pass
-                except Exception as e:
-                    logger.debug(f"Could not enumerate buttons: {e}")
-                
-                # Try to find and click login button with extensive selectors
-                login_clicked = False
-                login_selectors = [
-                    # English text variations
-                    'button:has-text("Log in")',
-                    'button:has-text("Login")',
-                    'button:has-text("Sign in")',
-                    'a:has-text("Log in")',
-                    'a:has-text("Login")',
-                    'a:has-text("Sign in")',
-                    
-                    # CSS class patterns
-                    '.tm-button:has-text("Log in")',
-                    '.login-button',
-                    '.auth-button',
-                    '[class*="login"]',
-                    '[class*="auth"]',
-                    
-                    # Data attributes
-                    '[data-action="login"]',
-                    '[data-testid="login-button"]',
-                    '[data-testid="auth-button"]',
-                    
-                    # Chinese text variations
-                    'button:has-text("登录")',
-                    'a:has-text("登录")',
-                    
-                    # Russian text variations
-                    'button:has-text("Войти")',
-                    'a:has-text("Войти")',
-                ]
-                
-                for selector in login_selectors:
-                    try:
-                        logger.info(f"Trying login selector: {selector}")
-                        await self.page.click(selector, timeout=3000)
-                        login_clicked = True
-                        logger.info("Login button clicked successfully")
-                        await asyncio.sleep(3)
-                        logger.info(f"Current URL after click: {self.page.url}")
-                        break
-                    except Exception as e:
-                        logger.debug(f"Selector {selector} not found: {e}")
-                        continue
-                
-                # Try XPath selectors as fallback
-                if not login_clicked:
-                    xpath_selectors = [
-                        '//button[contains(text(), "Log")]',
-                        '//a[contains(text(), "Log")]',
-                        '//button[contains(text(), "登录")]',
-                        '//a[contains(text(), "登录")]',
-                        '//button[contains(@class, "login")]',
-                        '//a[contains(@class, "login")]',
-                    ]
-                    
-                    for xpath in xpath_selectors:
-                        try:
-                            logger.info(f"Trying XPath selector: {xpath}")
-                            element = await self.page.wait_for_selector(f'xpath={xpath}', timeout=3000)
-                            if element:
-                                await element.click()
-                                login_clicked = True
-                                logger.info("Login button clicked via XPath")
-                                await asyncio.sleep(3)
-                                logger.info(f"Current URL after XPath click: {self.page.url}")
-                                break
-                        except Exception as e:
-                            logger.debug(f"XPath {xpath} not found: {e}")
-                            continue
-                
-                if not login_clicked:
-                    # Check if already logged in
-                    content = await self.page.content()
-                    if 'Balance' in content or 'My Items' in content or 'Log out' in content:
-                        logger.info("Already logged in")
-                        await self.save_session(await self.context.cookies(), await self.context.storage_state())
-                        return True
-                    else:
-                        logger.error("Could not find login button and not logged in")
-                        # Save debugging info
-                        try:
-                            screenshot_path = self._get_temp_path('fragment_login_error', '.png')
-                            await self.page.screenshot(path=screenshot_path, full_page=True)
-                            logger.info(f"Screenshot saved to {screenshot_path}")
-                            
-                            html_content = await self.page.content()
-                            self._save_debug_file(html_content, 'fragment_page_error', '.html')
-                        except Exception as e:
-                            logger.debug(f"Could not save debug info: {e}")
-                        
-                        # Continue to next retry instead of returning False immediately
-                        if retry_attempt < max_retries - 1:
-                            continue
-                        return False
-                
-                # Take screenshot after login button clicked
-                try:
-                    screenshot_path = self._get_temp_path('fragment_after_login_click', '.png')
-                    await self.page.screenshot(path=screenshot_path)
-                    logger.info(f"Screenshot saved to {screenshot_path}")
-                except Exception as e:
-                    logger.debug(f"Could not save screenshot: {e}")
-                
-                # Check for QR code or phone login options
-                logger.info("Checking for QR code or phone login...")
-                await asyncio.sleep(2)
-                
-                # Try to detect QR code element
-                qr_detected = False
-                qr_selectors = [
-                    'canvas',  # QR codes often rendered on canvas
-                    '[class*="qr"]',
-                    '[class*="QR"]',
-                    'img[alt*="QR"]',
-                    '[data-testid="qr-code"]',
-                ]
-                
-                for selector in qr_selectors:
-                    try:
-                        qr_element = await self.page.wait_for_selector(selector, timeout=3000)
-                        if qr_element:
-                            qr_detected = True
-                            logger.info(f"QR code detected with selector: {selector}")
-                            # Take screenshot of QR code
-                            try:
-                                screenshot_path = self._get_temp_path('fragment_qr_code', '.png')
-                                await self.page.screenshot(path=screenshot_path)
-                                logger.info(f"QR code screenshot saved to {screenshot_path}")
-                            except Exception as e:
-                                logger.debug(f"Could not save QR screenshot: {e}")
-                            break
-                    except Exception as e:
-                        logger.debug(f"QR selector {selector} not found: {e}")
-                        continue
-                
-                if not qr_detected:
-                    logger.warning("QR code not detected, checking for phone login option...")
-                    # Check for phone number input
-                    phone_input_detected = False
-                    phone_selectors = [
-                        'input[type="tel"]',
-                        'input[placeholder*="phone"]',
-                        'input[placeholder*="Phone"]',
-                        'input[placeholder*="номер"]',
-                        'input[placeholder*="电话"]',
-                        '[data-testid="phone-input"]',
-                    ]
-                    
-                    for selector in phone_selectors:
-                        try:
-                            phone_element = await self.page.wait_for_selector(selector, timeout=2000)
-                            if phone_element:
-                                phone_input_detected = True
-                                logger.info(f"Phone input detected with selector: {selector}")
-                                break
-                        except Exception:
-                            continue
-                    
-                    if phone_input_detected:
-                        logger.info("Phone number login available as alternative to QR code")
-                
-                # Wait for QR code or phone login completion
-                logger.info("Waiting for login... Please scan QR code or use phone number login")
-                
-                # Wait for either successful login or timeout
-                try:
-                    # Wait for navigation away from login page or success indicators
-                    # Optimized: cache innerText and use efficient selectors
-                    # Note: cookie check only verifies presence, doesn't read value (secure)
-                    await self.page.wait_for_function(
-                        """() => {
-                            const text = document.body.innerText;
-                            const indicators = [
-                                text.includes('Balance'),
-                                text.includes('My Items'),
-                                text.includes('Log out') || text.includes('Logout'),
-                                document.cookie.includes('stel_token'),  // Only checks presence, not value
-                                window.location.pathname !== '/',
-                                document.querySelector('[class*="avatar"],[class*="profile"]') !== null
-                            ];
-                            return indicators.filter(Boolean).length >= 2;  // At least 2 indicators
-                        }""",
-                        timeout=180000  # 3 minutes for login (QR scan or phone confirmation)
-                    )
-                    
-                    await asyncio.sleep(3)
-                    
-                    # Verify login success with multiple indicators
-                    content = await self.page.content()
-                    current_url = self.page.url
-                    logger.info(f"Login completed, current URL: {current_url}")
-                    
-                    success_indicators = [
-                        'Balance' in content,
-                        'My Items' in content,
-                        'Log out' in content,
-                        'Logout' in content,
-                        current_url not in self.FRAGMENT_BASE_PATHS,
-                    ]
-                    
-                    success_count = sum(success_indicators)
-                    logger.info(f"Success indicators detected: {success_count}/5")
-                    
-                    if success_count >= 2:
-                        # Save session
-                        cookies = await self.context.cookies()
-                        storage_state = await self.context.storage_state()
-                        await self.save_session(cookies, storage_state)
-                        
-                        # Save success page for debugging
-                        try:
-                            screenshot_path = self._get_temp_path('fragment_login_success', '.png')
-                            await self.page.screenshot(path=screenshot_path)
-                            logger.info(f"Success screenshot saved to {screenshot_path}")
-                        except Exception as e:
-                            logger.debug(f"Could not save success screenshot: {e}")
-                        
-                        logger.info("Login successful!")
-                        return True
-                    else:
-                        logger.warning("Login page changed but couldn't confirm success with enough indicators")
-                        # Save uncertain state for debugging
-                        try:
-                            screenshot_path = self._get_temp_path('fragment_login_uncertain', '.png')
-                            await self.page.screenshot(path=screenshot_path, full_page=True)
-                            html_content = await self.page.content()
-                            self._save_debug_file(html_content, 'fragment_page_uncertain', '.html')
-                        except Exception as e:
-                            logger.debug(f"Could not save debug info: {e}")
-                        
-                        # Continue to next retry
-                        if retry_attempt < max_retries - 1:
-                            continue
-                        return False
-                    
-                except PlaywrightTimeout as e:
-                    logger.error(f"Login timeout after 3 minutes: {e}")
-                    # Take screenshot for debugging
-                    try:
-                        screenshot_path = self._get_temp_path('fragment_login_timeout', '.png')
-                        await self.page.screenshot(path=screenshot_path, full_page=True)
-                        logger.info(f"Timeout screenshot saved to {screenshot_path}")
-                        
-                        html_content = await self.page.content()
-                        self._save_debug_file(html_content, 'fragment_page_timeout', '.html')
-                    except Exception as screenshot_error:
-                        logger.debug(f"Could not save timeout debug info: {screenshot_error}")
-                    
-                    # Continue to next retry
-                    if retry_attempt < max_retries - 1:
-                        continue
-                    return False
-                except Exception as e:
-                    logger.error(f"Login error: {e}")
-                    # Continue to next retry
-                    if retry_attempt < max_retries - 1:
-                        continue
-                    return False
-                    
-            except Exception as e:
-                logger.error(f"Error during login attempt {retry_attempt + 1}: {e}")
-                # Take screenshot for debugging
-                try:
-                    if self.page:
-                        screenshot_path = self._get_temp_path(f'fragment_login_exception_{retry_attempt}', '.png')
-                        await self.page.screenshot(path=screenshot_path, full_page=True)
-                        logger.info(f"Exception screenshot saved to {screenshot_path}")
-                        
-                        html_content = await self.page.content()
-                        self._save_debug_file(html_content, f'fragment_page_exception_{retry_attempt}', '.html')
-                except Exception as screenshot_error:
-                    logger.debug(f"Could not save exception debug info: {screenshot_error}")
-                
-                # Continue to next retry
-                if retry_attempt < max_retries - 1:
-                    continue
-                return False
-            finally:
-                # Don't close browser immediately, keep it for session
-                pass
-        
-        # All retries exhausted
-        logger.error(f"Login failed after {max_retries} attempts")
-        return False
-    
-    async def restore_session(self):
-        """Restore a saved session"""
         try:
-            session_data = await self.load_session()
-            if not session_data:
-                logger.warning("No saved session to restore")
-                return False
+            logger.info("🔐 开始 Telegram 登录流程...")
             
-            await self.init_browser()
+            # Initialize (which includes login)
+            success = await self._ensure_initialized()
             
-            # Create context with saved state
-            self.context = await self.browser.new_context(
-                storage_state=session_data.get('storage_state'),
-                viewport={'width': 1280, 'height': 720},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            )
-            self.page = await self.context.new_page()
-            
-            # Navigate to Fragment to verify session
-            logger.info("Restoring session and navigating to Fragment...")
-            await self.page.goto('https://fragment.com', wait_until='networkidle', timeout=30000)
-            await asyncio.sleep(3)
-            
-            # Check if we're logged in
-            content = await self.page.content()
-            if 'Log out' in content or 'Balance' in content or 'My Items' in content:
-                logger.info("Session restored successfully")
+            if success:
+                logger.info("✅ Telegram 登录成功")
                 return True
             else:
-                logger.warning("Session expired or invalid")
+                logger.error("❌ Telegram 登录失败")
                 return False
                 
         except Exception as e:
-            logger.error(f"Error restoring session: {e}")
+            logger.error(f"❌ 登录错误: {e}", exc_info=True)
             return False
     
+    async def restore_session(self):
+        """
+        Restore saved session - compatibility method
+        Just ensures initialization
+        
+        Returns:
+            bool: True if session restored/initialized
+        """
+        return await self._ensure_initialized()
+    
     async def get_balance(self):
-        """Get Fragment account balance"""
+        """
+        Get Fragment account balance
+        
+        Returns:
+            float: Balance in TON, or None if failed
+        """
         try:
-            # Browser automation method
-            if not self.page:
-                if not await self.restore_session():
-                    logger.error("Cannot restore session for balance check")
-                    return None
+            if not await self._ensure_initialized():
+                logger.error("❌ Fragment not initialized")
+                return None
             
-            await self.page.goto('https://fragment.com', wait_until='networkidle', timeout=30000)
-            await asyncio.sleep(2)
-            
-            # Try multiple selectors for balance
-            balance_selectors = [
-                '.tm-balance',
-                '[class*="balance"]',
-                'text=/[0-9.]+ TON/',
-                '.header-balance'
-            ]
-            
-            for selector in balance_selectors:
-                try:
-                    balance_element = await self.page.wait_for_selector(selector, timeout=3000)
-                    if balance_element:
-                        balance_text = await balance_element.text_content()
-                        logger.info(f"Found balance text: {balance_text}")
-                        # Parse balance from text
-                        match = re.search(r'([\d,.]+)', balance_text)
-                        if match:
-                            balance_str = match.group(1).replace(',', '')
-                            return float(balance_str)
-                except Exception as e:
-                    logger.debug(f"Balance selector {selector} failed: {e}")
-                    continue
-            
-            logger.warning("Could not find balance element with any selector")
-            return None
+            balance = await self.premium.get_balance()
+            return balance
             
         except Exception as e:
-            logger.error(f"Error getting balance: {e}", exc_info=True)
+            logger.error(f"❌ Error getting balance: {e}", exc_info=True)
             return None
     
     async def gift_premium(self, user_id: int, months: int, max_retries: int = 3):
         """
-        Gift Telegram Premium to a user with retry mechanism
+        Gift Telegram Premium to a user
         
         Args:
             user_id: Telegram user ID of the recipient
@@ -2185,213 +1725,61 @@ class FragmentAutomation:
             max_retries: Maximum number of retry attempts (default: 3)
             
         Returns:
-            True if successful, False otherwise
+            bool: True if successful, False otherwise
         """
-        logger.info(f"Gifting {months} months Premium to user {user_id}")
+        logger.info(f"🎁 Gifting {months} months Premium to user {user_id}")
         
-        # Browser automation method
         for attempt in range(max_retries):
             try:
-                logger.info(f"Attempting to gift Premium via browser (attempt {attempt + 1}/{max_retries})")
-                
-                if not self.page:
-                    if not await self.restore_session():
-                        logger.error("Cannot restore session for gifting")
-                        if attempt < max_retries - 1:
-                            await asyncio.sleep(5)
-                            continue
-                        return False
-                
-                # Navigate to gift premium page
-                logger.info("Navigating to Premium gift page...")
-                await self.page.goto('https://fragment.com/gifts', wait_until='networkidle', timeout=30000)
-                await asyncio.sleep(2)
-                
-                # Try to find and click Premium gift option
-                premium_selectors = [
-                    'a:has-text("Telegram Premium")',
-                    'text=/Telegram Premium/i',
-                    '[href*="telegram-premium"]'
-                ]
-                
-                premium_clicked = False
-                for selector in premium_selectors:
-                    try:
-                        logger.info(f"Trying Premium selector: {selector}")
-                        await self.page.click(selector, timeout=5000)
-                        premium_clicked = True
-                        await asyncio.sleep(2)
-                        break
-                    except Exception as e:
-                        logger.debug(f"Selector {selector} failed: {e}")
-                        continue
-                
-                if not premium_clicked:
-                    logger.error("Could not find Premium gift option")
+                if not await self._ensure_initialized():
+                    logger.error("❌ Fragment not initialized")
                     if attempt < max_retries - 1:
-                        await asyncio.sleep(5)
-                        continue
-                    return False
-                
-                # Select duration
-                logger.info(f"Selecting {months} months duration...")
-                duration_selectors = [
-                    f'button:has-text("{months} month")',
-                    f'[data-months="{months}"]',
-                    f'text=/{months} month/i'
-                ]
-                
-                duration_clicked = False
-                for selector in duration_selectors:
-                    try:
-                        await self.page.click(selector, timeout=5000)
-                        duration_clicked = True
-                        await asyncio.sleep(1)
-                        break
-                    except Exception as e:
-                        logger.debug(f"Duration selector {selector} failed: {e}")
-                        continue
-                
-                if not duration_clicked:
-                    logger.warning(f"Could not select {months} months duration, may already be selected")
-                
-                # Enter recipient user ID
-                logger.info(f"Entering recipient user ID: {user_id}")
-                user_id_selectors = [
-                    'input[name="user_id"]',
-                    'input[placeholder*="User ID"]',
-                    'input[placeholder*="username"]',
-                    'input[type="text"]'
-                ]
-                
-                user_id_entered = False
-                for selector in user_id_selectors:
-                    try:
-                        await self.page.fill(selector, str(user_id), timeout=5000)
-                        user_id_entered = True
-                        await asyncio.sleep(1)
-                        break
-                    except Exception as e:
-                        logger.debug(f"User ID input {selector} failed: {e}")
-                        continue
-                
-                if not user_id_entered:
-                    logger.error("Could not find user ID input field")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(5)
-                        continue
-                    return False
-                
-                # Click gift/send button
-                logger.info("Clicking gift button...")
-                gift_selectors = [
-                    'button:has-text("Gift")',
-                    'button:has-text("Send")',
-                    'button:has-text("Send Gift")',
-                    'button[type="submit"]'
-                ]
-                
-                gift_clicked = False
-                for selector in gift_selectors:
-                    try:
-                        await self.page.click(selector, timeout=5000)
-                        gift_clicked = True
                         await asyncio.sleep(3)
-                        break
-                    except Exception as e:
-                        logger.debug(f"Gift button {selector} failed: {e}")
-                        continue
-                
-                if not gift_clicked:
-                    logger.error("Could not find gift button")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(5)
                         continue
                     return False
                 
-                # Try to confirm if needed
-                logger.info("Checking for confirmation dialog...")
-                confirm_selectors = [
-                    'button:has-text("Confirm")',
-                    'button:has-text("Yes")',
-                    'button:has-text("OK")'
-                ]
+                # Call the API to gift premium
+                result = await self.premium.gift_premium(user_id, months)
                 
-                for selector in confirm_selectors:
-                    try:
-                        await self.page.click(selector, timeout=3000)
-                        await asyncio.sleep(2)
-                        logger.info("Confirmation clicked")
-                        break
-                    except Exception:
-                        # No confirmation needed or button not found
-                        pass
-                
-                # Check for success
-                await asyncio.sleep(2)
-                content = await self.page.content()
-                page_text = await self.page.evaluate('() => document.body.innerText')
-                
-                success_indicators = ['success', 'sent', 'delivered', 'completed']
-                error_indicators = ['error', 'failed', 'insufficient', 'invalid']
-                
-                if any(indicator in page_text.lower() for indicator in success_indicators):
-                    logger.info(f"Successfully gifted {months} months Premium to user {user_id}")
+                if result.get('ok'):
+                    logger.info(f"✅ Successfully gifted {months} months Premium to user {user_id}")
                     return True
-                elif any(indicator in page_text.lower() for indicator in error_indicators):
-                    logger.error(f"Error gifting Premium: {page_text[:200]}")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(5)
-                        continue
-                    return False
                 else:
-                    logger.warning("Could not confirm gift success, assuming success")
-                    return True
+                    error = result.get('error', 'Unknown error')
+                    logger.error(f"❌ Failed to gift Premium: {error}")
+                    
+                    # Retry on certain errors
+                    if attempt < max_retries - 1:
+                        logger.info(f"Retrying... (attempt {attempt + 2}/{max_retries})")
+                        await asyncio.sleep(3)
+                        continue
+                    
+                    return False
                     
             except Exception as e:
-                logger.error(f"Error gifting premium (attempt {attempt + 1}): {e}")
+                logger.error(f"❌ Error gifting premium (attempt {attempt + 1}): {e}", exc_info=True)
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(3)
                     continue
                 return False
         
         return False
     
     async def close(self):
-        """Close browser and cleanup"""
+        """Close Fragment connection"""
         try:
-            if self.context:
-                await self.context.close()
-            if self.browser:
-                await self.browser.close()
-            if self.playwright:
-                await self.playwright.stop()
+            if self.premium:
+                await self.premium.close()
+                logger.info("Fragment connection closed")
         except Exception as e:
-            logger.error(f"Error closing browser: {e}")
+            logger.error(f"Error closing Fragment: {e}")
 
 # Global fragment instance
-fragment = FragmentAutomation()
-import asyncio
-import qrcode
-import io
-import uuid
-from datetime import datetime
-from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
+fragment = FragmentAutomationWrapper()
 
 # ============================================================================
 # BOT HANDLERS AND MAIN LOGIC
 # ============================================================================
-
-
-    ContextTypes,
-    MessageHandler,
-    filters
-)
-
 
 # Configure logging
 log_level = getattr(logging, config.LOG_LEVEL, logging.INFO)
@@ -2533,85 +1921,68 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ 无法查询余额，请检查 Fragment 登录状态")
 
 async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /login command - login to Fragment"""
+    """Handle /login command - login to Fragment via Telegram"""
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ 您没有权限使用此命令")
         return
     
-    # Check Playwright dependencies
-    deps_ok, error_type = await fragment.check_playwright_dependencies()
-    if not deps_ok:
-        if error_type == "missing_deps":
-            await update.message.reply_text(
-                "❌ **系统缺少浏览器依赖**\n\n"
-                "📋 请在服务器上执行以下命令安装依赖：\n\n"
-                "**方法 1（推荐）：**\n"
-                "`playwright install-deps`\n\n"
-                "**方法 2（Ubuntu/Debian）：**\n"
-                "`apt-get install -y libnss3 libnspr4 libatk1.0-0 "
-                "libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 "
-                "libxcomposite1 libxdamage1 libxfixes3 libxrandr2 "
-                "libgbm1 libpango-1.0-0 libcairo2 libasound2`\n\n"
-                "安装完成后重试 /login",
-                parse_mode='Markdown'
-            )
-            return
-        elif error_type == "missing_browser":
-            await update.message.reply_text(
-                "❌ **浏览器未安装**\n\n"
-                "📋 请在服务器上执行以下命令：\n\n"
-                "`playwright install chromium`\n\n"
-                "安装完成后重试 /login",
-                parse_mode='Markdown'
-            )
-            return
-        else:
-            await update.message.reply_text(
-                f"❌ 检测依赖时出错\n\n"
-                f"错误信息：`{error_type[:200]}`\n\n"
-                f"请检查 Playwright 安装是否正确",
-                parse_mode='Markdown'
-            )
-            return
+    # Check if phone number is configured
+    if not config.TELEGRAM_PHONE or config.TELEGRAM_PHONE == '+8613800138000':
+        await update.message.reply_text(
+            "❌ <b>未配置 Telegram 手机号</b>\n\n"
+            "<b>配置步骤：</b>\n"
+            "1️⃣ 编辑 .env 文件\n"
+            "2️⃣ 设置 TELEGRAM_PHONE=+你的手机号（国际格式）\n"
+            "3️⃣ 示例：TELEGRAM_PHONE=+8613800138000\n"
+            "4️⃣ 重启机器人\n\n"
+            "<b>注意：</b>使用国际格式，包含国家代码",
+            parse_mode='HTML'
+        )
+        return
     
     await update.message.reply_text(
-        "🔐 开始 Fragment 登录流程...\n\n"
-        "登录方式：\n"
-        "• 📱 扫描二维码（推荐）\n"
-        "• 📞 或使用手机号码登录\n\n"
-        "登录过程会保存 session，之后无需重复登录。\n\n"
-        "⏳ 请等待，这可能需要几分钟..."
+        "🔐 开始 Telegram 登录流程...\n\n"
+        "<b>使用 Telethon + Fragment API 方式登录</b>\n\n"
+        "📱 <b>登录方式：</b>\n"
+        "• 首次登录需要输入 Telegram 验证码\n"
+        "• 验证码将发送到您配置的手机号\n"
+        "• Session 保存后，后续无需验证码\n\n"
+        "✅ <b>优势：</b>\n"
+        "• 纯 API 调用，无需浏览器\n"
+        "• 速度快，资源占用少\n"
+        "• 稳定可靠\n\n"
+        "⏳ 请等待，正在连接 Telegram...",
+        parse_mode='HTML'
     )
     
     try:
         success = await fragment.login_with_telegram()
         
         if success:
-            await update.message.reply_text("✅ Fragment 登录成功！")
+            await update.message.reply_text(
+                "✅ <b>Telegram 登录成功！</b>\n\n"
+                "🎉 Fragment API 已就绪\n"
+                "💎 现在可以自动开通 Premium 会员了\n\n"
+                "💡 <b>提示：</b>\n"
+                "• Session 已保存，无需重复登录\n"
+                "• 使用 /balance 查看 Fragment 余额",
+                parse_mode='HTML'
+            )
         else:
             await update.message.reply_text(
-                "❌ <b>Fragment 登录失败</b>\n\n"
+                "❌ <b>Telegram 登录失败</b>\n\n"
                 "<b>可能的原因：</b>\n"
-                "1️⃣ 未在 3 分钟内完成登录（扫描二维码或手机号确认）\n"
-                "2️⃣ 网络连接不稳定或超时\n"
-                "3️⃣ Fragment.com 页面结构已更新\n"
-                "4️⃣ Playwright 浏览器启动失败\n\n"
-                "<b>登录方式：</b>\n"
-                "• 📱 扫描二维码登录\n"
-                "• 📞 使用手机号码登录\n\n"
-                "<b>排查步骤：</b>\n"
+                "1️⃣ 手机号配置错误（需要国际格式）\n"
+                "2️⃣ 未及时输入验证码\n"
+                "3️⃣ 网络连接问题\n"
+                "4️⃣ Telegram 账号问题\n\n"
+                "<b>解决方法：</b>\n"
+                "• 检查 .env 中的 TELEGRAM_PHONE 配置\n"
+                "• 确保手机号格式正确（如 +8613800138000）\n"
                 "• 检查服务器网络连接\n"
-                "• 确认 Playwright 浏览器已正确安装\n"
-                "• 查看日志文件获取详细错误信息\n"
-                "• 检查 /tmp 目录下的调试文件：\n"
-                "  - fragment_page_initial.html（初始页面）\n"
-                "  - fragment_qr_code.png（二维码截图）\n"
-                "  - fragment_login_error.png（错误截图）\n"
-                "  - fragment_login_timeout.png（超时截图）\n"
-                "  - fragment_page_*.html（页面HTML）\n\n"
-                "<b>日志位置：</b>\n"
-                "使用命令查看日志：<code>journalctl -u telegram-premium-bot -n 100</code>\n\n"
-                "如果问题持续，请重启服务后重试。",
+                "• 查看日志获取详细错误信息\n\n"
+                "<b>日志命令：</b>\n"
+                "<code>journalctl -u telegram-premium-bot -n 50</code>",
                 parse_mode='HTML'
             )
     except Exception as e:
@@ -2619,13 +1990,11 @@ async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"❌ <b>登录过程中发生异常</b>\n\n"
             f"<b>错误类型：</b> {type(e).__name__}\n"
-            f"<b>错误信息：</b> {str(e)}\n\n"
+            f"<b>错误信息：</b> {str(e)[:200]}\n\n"
             f"<b>建议操作：</b>\n"
-            f"• 检查服务器资源（内存、CPU）\n"
-            f"• 确认 Playwright 依赖已安装：\n"
-            f"  <code>python -m playwright install chromium</code>\n"
-            f"• 查看完整日志获取更多信息\n"
-            f"• 如果是网络问题，请检查防火墙设置",
+            f"• 检查 Telethon 是否正确安装\n"
+            f"• 确认 .env 配置正确\n"
+            f"• 查看完整日志获取更多信息",
             parse_mode='HTML'
         )
 
@@ -3868,38 +3237,55 @@ async def show_admin_stats(query, user):
     )
 
 async def admin_login(query, user):
-    """Admin login to Fragment"""
+    """Admin login to Fragment via Telegram"""
     if not is_admin(user.id):
         await query.answer("❌ 您没有权限", show_alert=True)
         return
     
+    # Check if phone number is configured
+    if not config.TELEGRAM_PHONE or config.TELEGRAM_PHONE == '+8613800138000':
+        await query.edit_message_text(
+            "❌ <b>未配置 Telegram 手机号</b>\n\n"
+            "<b>配置步骤：</b>\n"
+            "1️⃣ 编辑 .env 文件\n"
+            "2️⃣ 设置 TELEGRAM_PHONE=+你的手机号（国际格式）\n"
+            "3️⃣ 示例：TELEGRAM_PHONE=+8613800138000\n"
+            "4️⃣ 重启机器人\n\n"
+            "<b>注意：</b>使用国际格式，包含国家代码",
+            parse_mode='HTML'
+        )
+        return
+    
     await query.edit_message_text(
-        "🔐 开始 Fragment 登录流程...\n\n"
-        "这需要在服务器上打开浏览器并扫描二维码。\n"
-        "⏳ 请等待，这可能需要几分钟..."
+        "🔐 开始 Telegram 登录流程...\n\n"
+        "使用 Telethon + Fragment API 方式\n"
+        "首次登录需要输入验证码\n"
+        "⏳ 请等待..."
     )
     
     try:
         success = await fragment.login_with_telegram()
         
         if success:
-            await query.message.reply_text("✅ Fragment 登录成功！")
+            await query.message.reply_text(
+                "✅ <b>Telegram 登录成功！</b>\n\n"
+                "🎉 Fragment API 已就绪\n"
+                "💎 可以自动开通 Premium 会员了",
+                parse_mode='HTML'
+            )
         else:
             await query.message.reply_text(
-                "❌ <b>Fragment 登录失败</b>\n\n"
+                "❌ <b>Telegram 登录失败</b>\n\n"
                 "<b>可能的原因：</b>\n"
-                "1️⃣ 未在 2 分钟内扫描二维码\n"
-                "2️⃣ 网络连接不稳定或超时\n"
-                "3️⃣ Fragment.com 页面结构已更新\n"
-                "4️⃣ Playwright 浏览器启动失败\n\n"
-                "<b>排查步骤：</b>\n"
-                "• 检查服务器网络连接\n"
-                "• 确认 Playwright 浏览器已正确安装\n"
-                "• 查看日志文件获取详细错误信息\n"
-                "• 检查 /tmp 目录下的截图文件\n\n"
-                "<b>日志位置：</b>\n"
-                "使用命令查看日志：<code>journalctl -u telegram-premium-bot -n 50</code>\n\n"
-                "如果问题持续，请重启服务后重试。",
+                "1️⃣ 手机号配置错误\n"
+                "2️⃣ 未及时输入验证码\n"
+                "3️⃣ 网络连接问题\n\n"
+                "<b>解决方法：</b>\n"
+                "• 检查 .env 中的 TELEGRAM_PHONE\n"
+                "• 确保手机号格式正确\n"
+                "• 查看日志获取详细信息\n\n"
+                "<b>日志命令：</b>\n"
+                "<code>journalctl -u telegram-premium-bot -n 50</code>",
                 parse_mode='HTML'
             )
     except Exception as e:
@@ -3907,11 +3293,10 @@ async def admin_login(query, user):
         await query.message.reply_text(
             f"❌ <b>登录过程中发生异常</b>\n\n"
             f"<b>错误类型：</b> {type(e).__name__}\n"
-            f"<b>错误信息：</b> {str(e)}\n\n"
+            f"<b>错误信息：</b> {str(e)[:200]}\n\n"
             f"<b>建议操作：</b>\n"
-            f"• 检查服务器资源（内存、CPU）\n"
-            f"• 确认 Playwright 依赖已安装\n"
-            f"• 查看完整日志获取更多信息",
+            f"• 检查 Telethon 是否正确安装\n"
+            f"• 确认 .env 配置正确",
             parse_mode='HTML'
         )
 
