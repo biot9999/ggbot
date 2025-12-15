@@ -492,9 +492,13 @@ def get_cancel_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 def get_gift_confirmation_keyboard(order_data):
-    """Gift confirmation keyboard with confirm and cancel buttons"""
+    """Gift confirmation keyboard with confirm and cancel buttons
+    
+    Note: order_data parameter kept for backward compatibility but not used.
+    Order data is now stored in user_states to avoid Telegram's 64-byte callback_data limit.
+    """
     keyboard = [
-        [InlineKeyboardButton("✅ 确认赠送", callback_data=f"confirm_gift_{order_data}")],
+        [InlineKeyboardButton("✅ 确认赠送", callback_data="confirm_gift")],
         [InlineKeyboardButton("❌ 取消", callback_data="cancel_gift")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -2311,9 +2315,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_stars_purchase(query, user, stars)
     
     # Gift confirmation flow
-    elif data.startswith("confirm_gift_"):
-        order_data = data.split("_", 2)[2]
-        await handle_gift_confirmation(query, user, order_data)
+    elif data == "confirm_gift":
+        # Order data is now in user_states, no need to decode from callback_data
+        await handle_gift_confirmation(query, user)
     
     elif data == "cancel_gift":
         await handle_gift_cancellation(query, user)
@@ -2836,26 +2840,29 @@ async def handle_stars_purchase(query, user, stars):
         
         utils.log_order_action(order_id, "Created", f"User {user.id}, {stars} stars, ${price:.4f}")
 
-async def handle_gift_confirmation(query, user, order_data):
-    """Handle gift purchase confirmation with balance-first strategy"""
-    import json
-    import base64
+async def handle_gift_confirmation(query, user):
+    """Handle gift purchase confirmation with balance-first strategy
     
+    Order data is now read from user_states instead of callback_data
+    to avoid Telegram's 64-byte callback_data limit.
+    """
     try:
-        # Decode order data
-        order_dict = json.loads(base64.b64decode(order_data).decode())
-        months = order_dict['months']
-        recipient_id = order_dict.get('recipient_id')
-        recipient_username = order_dict.get('recipient_username')
-        
-        # Get user state to verify
+        # Get user state to verify and extract order data
         user_state = db.get_user_state(user.id)
         if not user_state or user_state.get('state') != 'confirm_recipient':
             await query.answer("❌ 会话已过期，请重新开始", show_alert=True)
             return
         
         state_data = user_state.get('data', {})
+        months = state_data.get('months')
         base_price = state_data.get('price')
+        recipient_id = state_data.get('recipient_id')
+        recipient_username = state_data.get('recipient_username')
+        
+        # Validate required data
+        if not months or not base_price:
+            await query.answer("❌ 订单数据不完整，请重新开始", show_alert=True)
+            return
         
         # Check user balance
         user_balance = db.get_user_balance(user.id)
@@ -3436,17 +3443,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 如果成功，会员将自动开通
 """
                 
-                # Encode order data
-                import json
-                import base64
-                order_data_dict = {
-                    'months': months,
-                    'recipient_id': None,
-                    'recipient_username': recipient_username
-                }
-                order_data = base64.b64encode(json.dumps(order_data_dict).encode()).decode()
-                
-                keyboard = keyboards.get_gift_confirmation_keyboard(order_data)
+                # No need to encode order data - it's already in user_states
+                keyboard = keyboards.get_gift_confirmation_keyboard("")  # Pass empty string for backward compatibility
                 
                 await update.message.reply_text(
                     confirmation_message,
@@ -3490,17 +3488,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Show confirmation page
         confirmation_message = messages.get_gift_confirmation_message(fetched_info, months, price)
         
-        # Encode order data for callback
-        import json
-        import base64
-        order_data_dict = {
-            'months': months,
-            'recipient_id': fetched_info.get('user_id'),
-            'recipient_username': fetched_info.get('username')
-        }
-        order_data = base64.b64encode(json.dumps(order_data_dict).encode()).decode()
-        
-        keyboard = keyboards.get_gift_confirmation_keyboard(order_data)
+        # No need to encode order data - it's already in user_states
+        keyboard = keyboards.get_gift_confirmation_keyboard("")  # Pass empty string for backward compatibility
         
         # If recipient has profile photo, send it with the message
         photo_data = fetched_info.get('photo_bytes') or fetched_info.get('photo_file_id')
