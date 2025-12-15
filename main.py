@@ -491,11 +491,10 @@ def get_cancel_keyboard():
     keyboard = [[InlineKeyboardButton("❌ 取消", callback_data="cancel_operation")]]
     return InlineKeyboardMarkup(keyboard)
 
-def get_gift_confirmation_keyboard(order_data):
+def get_gift_confirmation_keyboard():
     """Gift confirmation keyboard with confirm and cancel buttons
     
-    Note: order_data parameter kept for backward compatibility but not used.
-    Order data is now stored in user_states to avoid Telegram's 64-byte callback_data limit.
+    Order data is stored in user_states to avoid Telegram's 64-byte callback_data limit.
     """
     keyboard = [
         [InlineKeyboardButton("✅ 确认赠送", callback_data="confirm_gift")],
@@ -3444,7 +3443,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 """
                 
                 # No need to encode order data - it's already in user_states
-                keyboard = keyboards.get_gift_confirmation_keyboard("")  # Pass empty string for backward compatibility
+                keyboard = keyboards.get_gift_confirmation_keyboard()
                 
                 await update.message.reply_text(
                     confirmation_message,
@@ -3489,7 +3488,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         confirmation_message = messages.get_gift_confirmation_message(fetched_info, months, price)
         
         # No need to encode order data - it's already in user_states
-        keyboard = keyboards.get_gift_confirmation_keyboard("")  # Pass empty string for backward compatibility
+        keyboard = keyboards.get_gift_confirmation_keyboard()
         
         # If recipient has profile photo, send it with the message
         photo_data = fetched_info.get('photo_bytes') or fetched_info.get('photo_file_id')

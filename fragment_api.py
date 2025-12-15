@@ -125,10 +125,16 @@ class FragmentAPI:
             logger.debug(f"API Response Status: {response.status_code}")
             logger.debug(f"API Response Headers: {dict(response.headers)}")
             
-            # Log raw response text for debugging
+            # Log raw response text for debugging (first 500 chars, be careful with sensitive data)
             try:
                 response_text = response.text
-                logger.debug(f"API Response Text (first 500 chars): {response_text[:500]}")
+                # Sanitize potential sensitive data from logs
+                sanitized_text = response_text[:500]
+                # Don't log if it looks like it contains tokens or sensitive cookies
+                if 'token' not in sanitized_text.lower() and 'password' not in sanitized_text.lower():
+                    logger.debug(f"API Response Text (first 500 chars): {sanitized_text}")
+                else:
+                    logger.debug("API Response Text: [Contains sensitive data, not logged]")
             except Exception as e:
                 logger.warning(f"Could not log response text: {e}")
             
