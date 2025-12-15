@@ -160,8 +160,12 @@ class TelethonResolver:
         if self.current_client and self._connected:
             try:
                 await self.current_client.disconnect()
-            except:
-                pass
+            except (ConnectionError, OSError) as e:
+                # Ignore disconnect errors during rotation - session may already be dead
+                logger.debug(f"Error disconnecting session during rotation: {e}")
+            except Exception as e:
+                # Log unexpected errors but continue rotation
+                logger.warning(f"Unexpected error disconnecting session: {e}")
         
         self.current_client = None
         self.current_session_name = None

@@ -1702,7 +1702,8 @@ class TronPayment:
                                 'from': tx.get('from'),
                                 'to': tx.get('to'),
                                 'timestamp': tx_timestamp,
-                                'tx_data': tx  # Include full transaction data for authenticity verification
+                                # Include full tx data for fallback validation (contains token_info with contract address)
+                                'tx_data': tx
                             }
                 
                 # Wait before next check
