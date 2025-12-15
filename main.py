@@ -457,8 +457,8 @@ def get_welcome_message(first_name, is_admin=False):
 👑 管理员功能：
 /admin - 管理员面板
 /setprice - 设置价格
-/balance - 查看余额
-/login - 登录 Fragment
+/balance - 查看余额（提示信息）
+/login - 查看 Fragment 配置状态
 """
     
     return message
@@ -1919,84 +1919,69 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ 您没有权限使用此命令")
         return
     
-    await update.message.reply_text("🔍 正在查询 Fragment 余额...")
-    
-    balance = await fragment.get_balance()
-    
-    if balance is not None:
-        await update.message.reply_text(f"💰 Fragment 余额：{balance:.2f} TON")
-    else:
-        await update.message.reply_text("❌ 无法查询余额，请检查 Fragment 登录状态")
+    await update.message.reply_text(
+        "ℹ️ <b>Fragment 余额查询</b>\n\n"
+        "⚠️ Fragment API 不提供余额查询接口\n\n"
+        "💡 <b>建议：</b>\n"
+        "• 直接在浏览器访问 fragment.com 查看余额\n"
+        "• 确保 Fragment 账户有足够余额用于会员开通",
+        parse_mode='HTML'
+    )
 
 async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /login command - login to Fragment via Telegram"""
+    """Handle /login command - initialize Fragment with manual authentication"""
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ 您没有权限使用此命令")
         return
     
-    # Check if phone number is configured
-    if not config.TELEGRAM_PHONE or config.TELEGRAM_PHONE == '+8613800138000':
-        await update.message.reply_text(
-            "❌ <b>未配置 Telegram 手机号</b>\n\n"
-            "<b>配置步骤：</b>\n"
-            "1️⃣ 编辑 .env 文件\n"
-            "2️⃣ 设置 TELEGRAM_PHONE=+你的手机号（国际格式）\n"
-            "3️⃣ 示例：TELEGRAM_PHONE=+8613800138000\n"
-            "4️⃣ 重启机器人\n\n"
-            "<b>注意：</b>使用国际格式，包含国家代码",
-            parse_mode='HTML'
-        )
-        return
-    
     await update.message.reply_text(
-        "🔐 开始 Telegram 登录流程...\n\n"
-        "<b>使用 Telethon + Fragment API 方式登录</b>\n\n"
-        "📱 <b>登录方式：</b>\n"
-        "• 首次登录需要输入 Telegram 验证码\n"
-        "• 验证码将发送到您配置的手机号\n"
-        "• Session 保存后，后续无需验证码\n\n"
+        "🔐 <b>Fragment 认证配置</b>\n\n"
+        "本项目使用<b>手动认证方式</b>，避免账号冻结风险\n\n"
+        "📝 <b>配置步骤：</b>\n\n"
+        "1️⃣ 在浏览器访问 https://fragment.com 并登录\n"
+        "2️⃣ 打开开发者工具（F12）\n"
+        "3️⃣ 从 Application > Cookies 获取：\n"
+        "   • stel_ssid\n"
+        "   • stel_token\n"
+        "   • stel_dt\n"
+        "4️⃣ 从 Network 请求中获取 hash 参数\n"
+        "5️⃣ 填入服务器上的 fragment_auth.json 文件\n\n"
         "✅ <b>优势：</b>\n"
-        "• 纯 API 调用，无需浏览器\n"
-        "• 速度快，资源占用少\n"
-        "• 稳定可靠\n\n"
-        "⏳ 请等待，正在连接 Telegram...",
+        "• 无需验证码，只需浏览器点击确认\n"
+        "• 避免账号冻结风险\n"
+        "• 认证数据长期有效\n"
+        "• 配置简单，更加安全\n\n"
+        "📚 详细教程请参考项目 README.md",
         parse_mode='HTML'
     )
     
+    # Try to check if already configured
     try:
-        success = await fragment.login_with_telegram()
+        success = await fragment._ensure_initialized()
         
         if success:
             await update.message.reply_text(
-                "✅ <b>Telegram 登录成功！</b>\n\n"
+                "✅ <b>Fragment 已配置且连接正常！</b>\n\n"
                 "🎉 Fragment API 已就绪\n"
                 "💎 现在可以自动开通 Premium 会员了\n\n"
                 "💡 <b>提示：</b>\n"
-                "• Session 已保存，无需重复登录\n"
-                "• 使用 /balance 查看 Fragment 余额",
+                "• 认证数据已加载\n"
+                "• 如需更新配置，修改 fragment_auth.json 并重启机器人",
                 parse_mode='HTML'
             )
         else:
             await update.message.reply_text(
-                "❌ <b>Telegram 登录失败</b>\n\n"
-                "<b>可能的原因：</b>\n"
-                "1️⃣ 手机号配置错误（需要国际格式）\n"
-                "2️⃣ 未及时输入验证码\n"
-                "3️⃣ 网络连接问题\n"
-                "4️⃣ Telegram 账号问题\n\n"
-                "<b>解决方法：</b>\n"
-                "• 检查 .env 中的 TELEGRAM_PHONE 配置\n"
-                "• 确保手机号格式正确（如 +8613800138000）\n"
-                "• 检查服务器网络连接\n"
-                "• 查看日志获取详细错误信息\n\n"
-                "<b>日志命令：</b>\n"
-                "<code>journalctl -u telegram-premium-bot -n 50</code>",
+                "❌ <b>Fragment 未配置或配置错误</b>\n\n"
+                "<b>请按上述步骤配置 fragment_auth.json</b>\n\n"
+                "配置文件示例：\n"
+                "<code>fragment_auth.json.example</code>\n\n"
+                "配置完成后重启机器人即可生效",
                 parse_mode='HTML'
             )
     except Exception as e:
         logger.error(f"Exception in login_command: {e}", exc_info=True)
         await update.message.reply_text(
-            f"❌ <b>登录过程中发生异常</b>\n\n"
+            f"❌ <b>检查配置时发生异常</b>\n\n"
             f"<b>错误类型：</b> {type(e).__name__}\n"
             f"<b>错误信息：</b> {str(e)[:200]}\n\n"
             f"<b>建议操作：</b>\n"
