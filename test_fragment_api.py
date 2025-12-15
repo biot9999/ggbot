@@ -63,16 +63,16 @@ def test_premium_info(premium):
         return None
 
 
-def test_gift_premium(premium, user_id: int, months: int = 3):
+def test_gift_premium(premium, username: str, months: int = 3):
     """测试赠送 Premium (仅测试模式，不实际赠送)"""
     logger.info("")
     logger.info("=" * 60)
-    logger.info(f"测试 3: 赠送 Premium (User ID: {user_id}, Months: {months})")
+    logger.info(f"测试 3: 赠送 Premium (Username: @{username}, Months: {months})")
     logger.info("=" * 60)
-    logger.warning("⚠️ 注意: 这将实际调用 API！确保 user_id 正确！")
+    logger.warning("⚠️ 注意: 这将实际调用 API！确保 username 正确！")
     
     try:
-        result = premium.gift_premium(user_id, months)
+        result = premium.gift_premium(username, months)
         
         if result.get('ok'):
             logger.info("✅ Premium 赠送成功")
@@ -141,19 +141,20 @@ def main():
     user_input = input("\n是否要测试赠送 Premium？这将实际调用 API！(yes/no): ")
     
     if user_input.lower() in ['yes', 'y']:
-        user_id = input("请输入目标 User ID: ")
+        username = input("请输入目标 @username (可以带或不带 @ 前缀): ")
         months = input("请输入月数 (3/6/12, 默认3): ") or "3"
         
         try:
-            user_id = int(user_id)
+            # Clean username
+            username = username.lstrip('@')
             months = int(months)
             
             if months not in [3, 6, 12]:
                 logger.error("❌ 月数必须是 3, 6 或 12")
             else:
-                confirm = input(f"\n确认为 User ID {user_id} 赠送 {months} 个月 Premium? (yes/no): ")
+                confirm = input(f"\n确认为 @{username} 赠送 {months} 个月 Premium? (yes/no): ")
                 if confirm.lower() in ['yes', 'y']:
-                    test_gift_premium(premium, user_id, months)
+                    test_gift_premium(premium, username, months)
                 else:
                     logger.info("已取消测试")
         except ValueError:
