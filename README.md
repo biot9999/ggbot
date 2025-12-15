@@ -17,13 +17,15 @@
 - ❌ /cancel 命令随时取消当前操作
 
 ### 管理员端功能
-- 🔐 Fragment.com 账号配置工具
-- 🌐 浏览器自动化登录 Fragment 并保存 session
+- 🔐 Telegram 登录认证（使用 Telethon）
+- 🌐 纯 API 调用 Fragment.com（无需浏览器）
 - 💰 自动检查 Fragment 账户余额
 - 📊 完整的统计面板（订单、收入、用户统计）
-- 🎁 自动调用 Fragment 赠送 Premium
+- 🎁 自动调用 Fragment API 赠送 Premium
 - 💵 会员和 Stars 价格可由管理员自定义设置
 - 🔄 自动重试机制提高成功率
+- ✅ 无系统依赖，只需 Python 包
+- ⚡ 速度快，资源占用少
 
 ### 支付系统
 - 💎 支持 USDT (TRC20) 支付
@@ -54,9 +56,10 @@
 ### 后端框架
 - **Python 3.8+**
 - **python-telegram-bot** - Telegram Bot API
-- **Playwright (Chromium)** - 浏览器自动化（操作 Fragment.com）
+- **Telethon** - Telegram 客户端库（用于 Fragment 认证）
 - **aiohttp** - 异步 HTTP 请求
 - **MongoDB** - 数据库
+- **requests** - Fragment API 调用
 
 ### 支付集成
 - **TronGrid API** - 监控 TRC20 USDT 交易
@@ -80,13 +83,9 @@ cd ggbot
 pip install -r requirements.txt
 ```
 
-### 3. 安装 Playwright 浏览器
-```bash
-playwright install chromium
-```
-> **注意**: 使用 Playwright 自带的 Chromium 浏览器，无需安装系统级 Google Chrome 或其他依赖库。
+> **注意**: 新版本使用纯 API 方式，无需安装浏览器或系统依赖库。
 
-### 4. 安装 MongoDB
+### 3. 安装 MongoDB
 根据你的操作系统安装 MongoDB：
 - **Ubuntu/Debian**: `sudo apt install mongodb`
 - **macOS**: `brew install mongodb-community`
@@ -105,6 +104,13 @@ TELEGRAM_BOT_TOKEN=your_bot_token_here
 
 # 管理员用户 ID（多个用逗号分隔）
 ADMIN_USER_IDS=123456789,987654321
+
+# Telegram API 配置（用于 Fragment 认证）
+# 默认值为公共 API，无需申请
+TELEGRAM_API_ID=2040
+TELEGRAM_API_HASH=b18441a1ff607e10a989891a5462e627
+# 你的手机号（国际格式，如 +8613800138000）
+TELEGRAM_PHONE=+8613800138000
 
 # MongoDB 配置
 MONGODB_URI=mongodb://localhost:27017
@@ -141,7 +147,6 @@ PAYMENT_CHECK_INTERVAL=30  # 30秒检查一次
 - 检查 .env 配置
 - 创建虚拟环境
 - 安装依赖
-- 安装 Playwright 浏览器
 - 启动机器人
 
 ### 手动启动
@@ -202,10 +207,42 @@ sudo systemctl status telegram-premium-bot
 2. 注册账号并创建 API Key
 3. 将 API Key 填入 `.env`（免费版限制较多，建议使用）
 
-### 5. 配置 Fragment.com
-1. 启动机器人后，使用管理员账号发送 `/login`
-2. 按提示完成 Fragment.com 登录
-3. 登录信息会自动保存，无需重复登录
+### 5. 配置 Fragment 认证
+1. 首次启动机器人后，使用管理员账号发送 `/login`
+2. 按提示输入 Telegram 验证码（从 Telegram 接收）
+3. 登录成功后，session 会自动保存，无需重复登录
+
+> **注意**: 
+> - 首次登录需要输入手机验证码
+> - Session 保存后，后续无需再次验证
+> - 使用纯 API 方式，无需浏览器操作
+
+## 🎁 Fragment 会员开通功能
+
+### 特点
+- ✅ 纯 API 调用，无需浏览器
+- ✅ 无系统依赖，只需 Python 包
+- ✅ 首次登录后自动保存 session
+- ✅ 支持自动开通和赠送会员
+- ✅ 速度快，资源占用少
+- ✅ 稳定可靠，不受页面变化影响
+
+### 技术架构
+使用 **Telethon + Fragment API** 纯 API 方式：
+
+```
+用户 → Telegram 登录 → Fragment Web App 认证 → 获取 hash/token → 调用 API
+```
+
+### 优势对比
+
+| 特性 | 旧方案（Playwright） | 新方案（API） |
+|------|---------------------|--------------|
+| 浏览器依赖 | ❌ 需要 Chromium (~300MB) | ✅ 无需浏览器 |
+| 系统依赖 | ❌ 需要 nss、cups、gtk3 等 | ✅ 无系统依赖 |
+| 资源占用 | ❌ 大（浏览器进程） | ✅ 小（纯 Python） |
+| 稳定性 | ⚠️ 页面更新可能导致失效 | ✅ API 稳定 |
+| 速度 | 🐌 较慢 | ⚡ 快速 |
 
 ## 🔒 安全特性
 
