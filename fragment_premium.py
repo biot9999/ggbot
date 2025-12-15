@@ -3,9 +3,7 @@ Fragment 会员开通集成模块
 整合认证和 API 调用
 """
 
-import asyncio
 import logging
-import aiohttp
 from fragment_auth import FragmentAuth
 from fragment_api import FragmentAPI
 
@@ -15,45 +13,60 @@ logger = logging.getLogger(__name__)
 class FragmentPremium:
     """Fragment 会员管理器"""
     
-    def __init__(self, api_id, api_hash, phone):
+    def __init__(self, config_file: str = 'fragment_auth.json'):
         """
         初始化 Fragment 会员管理器
         
         Args:
-            api_id: Telegram API ID
-            api_hash: Telegram API Hash
-            phone: 手机号（国际格式）
+            config_file: Fragment 认证配置文件路径
         """
-        self.auth = FragmentAuth(api_id, api_hash, phone)
+        self.config_file = config_file
+        self.auth = FragmentAuth(config_file)
         self.api = None
         self._initialized = False
     
-    async def initialize(self):
+    def initialize(self) -> bool:
         """
-        初始化：登录并获取认证
+        初始化：加载认证数据并创建 API 客户端
         
         Returns:
             bool: 初始化是否成功
         """
         try:
-            # 1. 登录 Telegram
             logger.info("开始初始化 Fragment Premium...")
-            if not await self.auth.login():
-                logger.error("Telegram 登录失败")
+            
+            # 1. 加载认证数据
+            if not self.auth.load_auth():
+                logger.error("❌ Fragment 认证数据加载失败")
+                logger.error("")
+                logger.error("📝 配置步骤：")
+                logger.error("1. 在浏览器访问 https://fragment.com 并登录")
+                logger.error("2. 打开浏览器开发者工具（F12）")
+                logger.error("3. 从 Application/Storage > Cookies 获取 cookies")
+                logger.error("4. 从 Network 请求中获取 hash 参数")
+                logger.error("5. 填入 fragment_auth.json 配置文件")
+                logger.error("")
                 return False
             
-            # 2. 获取 Fragment 认证
-            hash_value = await self.auth.get_fragment_auth()
+            # 2. 获取认证数据
+            auth_data = self.auth.get_auth_data()
             
-            if not hash_value:
-                logger.error("无法获取 Fragment 认证")
+            if not auth_data or not auth_data.get('hash'):
+                logger.error("❌ 认证数据无效：缺少 hash")
                 return False
             
-            # 3. 尝试获取 cookies（可选）
-            cookies = await self._get_fragment_cookies(hash_value)
+            # 3. 初始化 API 客户端
+            self.api = FragmentAPI(
+                hash_value=auth_data['hash'],
+                cookies=auth_data.get('cookies'),
+                headers=auth_data.get('headers')
+            )
             
-            # 4. 初始化 API 客户端
-            self.api = FragmentAPI(hash_value, cookies)
+            # 4. 测试连接
+            logger.info("测试 Fragment 连接...")
+            if not self.api.test_connection():
+                logger.warning("⚠️ Fragment 连接测试失败，认证可能已过期")
+                logger.warning("如果后续操作失败，请重新从浏览器获取认证数据")
             
             self._initialized = True
             logger.info("✅ Fragment Premium 初始化完成")
@@ -63,44 +76,7 @@ class FragmentPremium:
             logger.error(f"❌ 初始化失败: {e}", exc_info=True)
             return False
     
-    async def _get_fragment_cookies(self, hash_value: str):
-        """
-        获取 Fragment cookies（通过访问页面）
-        
-        Args:
-            hash_value: Fragment hash
-            
-        Returns:
-            dict: Cookies 字典
-        """
-        try:
-            logger.info("尝试获取 Fragment cookies...")
-            
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
-                
-                async with session.get(
-                    f'https://fragment.com?hash={hash_value}',
-                    headers=headers,
-                    allow_redirects=True
-                ) as resp:
-                    cookies = {k: v.value for k, v in resp.cookies.items()}
-                    
-                    if cookies:
-                        logger.info(f"✅ 获取到 {len(cookies)} 个 cookies")
-                        logger.debug(f"Cookies: {list(cookies.keys())}")
-                    else:
-                        logger.info("未获取到 cookies，将仅使用 hash")
-                    
-                    return cookies
-                    
-        except Exception as e:
-            logger.warning(f"获取 cookies 失败，将仅使用 hash: {e}")
-            return {}
-    
-    async def gift_premium(self, user_id: int, months: int = 12):
+    def gift_premium(self, user_id: int, months: int = 12):
         """
         给指定用户赠送会员
         
@@ -134,34 +110,7 @@ class FragmentPremium:
         
         return result
     
-    async def get_balance(self):
-        """
-        获取 Fragment 账户余额
-        
-        Returns:
-            float: 余额（TON），失败返回 None
-        """
-        if not self._initialized:
-            raise Exception("未初始化，请先调用 initialize()")
-        
-        try:
-            result = self.api.get_balance()
-            
-            if result.get('ok'):
-                # 尝试从响应中提取余额
-                balance = result.get('balance', result.get('ton_balance', None))
-                if balance is not None:
-                    logger.info(f"💰 Fragment 余额: {balance} TON")
-                    return float(balance)
-            
-            logger.warning("无法获取余额信息")
-            return None
-            
-        except Exception as e:
-            logger.error(f"获取余额失败: {e}", exc_info=True)
-            return None
-    
-    async def get_premium_info(self):
+    def get_premium_info(self):
         """
         获取 Premium 信息
         
@@ -172,48 +121,48 @@ class FragmentPremium:
             raise Exception("未初始化，请先调用 initialize()")
         
         return self.api.get_premium_info()
-    
-    async def close(self):
-        """关闭连接"""
-        await self.auth.close()
-        logger.info("Fragment Premium 已关闭")
 
 
 # 使用示例
-async def main():
+def main():
     """测试示例"""
-    # 配置（从环境变量或配置文件读取）
-    API_ID = 2040
-    API_HASH = "b18441a1ff607e10a989891a5462e627"
-    PHONE = "+8613800138000"  # 需要配置
+    import sys
     
-    premium = FragmentPremium(API_ID, API_HASH, PHONE)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    premium = FragmentPremium('fragment_auth.json')
     
     try:
         # 初始化
-        if await premium.initialize():
+        if premium.initialize():
             print("✅ 初始化成功")
             
-            # 获取余额
-            balance = await premium.get_balance()
-            if balance:
-                print(f"💰 余额: {balance} TON")
+            # 获取 Premium 信息
+            info = premium.get_premium_info()
+            if info.get('ok'):
+                print(f"✅ Premium 信息获取成功: {info}")
+            else:
+                print(f"⚠️ Premium 信息获取失败: {info.get('error')}")
             
             # 赠送会员（测试时注释掉）
-            # result = await premium.gift_premium(123456789, months=12)
+            # result = premium.gift_premium(123456789, months=12)
             # if result.get('ok'):
             #     print("✅ 会员开通成功！")
             # else:
             #     print(f"❌ 失败: {result.get('error')}")
         else:
             print("❌ 初始化失败")
+            sys.exit(1)
     
     except Exception as e:
         print(f"❌ 错误: {e}")
-    
-    finally:
-        await premium.close()
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()

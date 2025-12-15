@@ -46,11 +46,22 @@ logs/
 # Playwright
 .playwright/
 
-# Fragment Session
+# Fragment 认证数据（包含敏感信息）
+fragment_auth.json
+
+# Fragment Session (legacy)
 fragment_session.json
+
+# Telegram Session 文件
+*.session
+*.session-journal
 
 # QR Codes
 qrcodes/
 
 # MongoDB
 data/
+
+# 运行时文件
+bot.pid
+

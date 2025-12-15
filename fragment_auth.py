@@ -1,162 +1,113 @@
 """
 Fragment 认证模块
-使用 Telethon 登录 Telegram 并获取 Fragment 认证数据
+从配置文件加载手动获取的认证数据，避免账号冻结风险
 """
 
-from telethon import TelegramClient, functions
-from telethon.tl.types import DataJSON
-import re
+import json
 import logging
+from pathlib import Path
+from typing import Optional, Dict
 
 logger = logging.getLogger(__name__)
 
 
 class FragmentAuth:
-    """Fragment 认证管理器"""
+    """Fragment 认证管理器 - 使用手动认证方式"""
     
-    def __init__(self, api_id, api_hash, phone, session_name='fragment_session'):
+    def __init__(self, config_file: str = 'fragment_auth.json'):
         """
         初始化 Fragment 认证管理器
         
         Args:
-            api_id: Telegram API ID
-            api_hash: Telegram API Hash
-            phone: 手机号（国际格式，如 +8613800138000）
-            session_name: Session 文件名
+            config_file: 认证配置文件路径（JSON格式）
         """
-        self.api_id = api_id
-        self.api_hash = api_hash
-        self.phone = phone
-        self.session_name = session_name
-        self.client = None
+        self.config_file = config_file
         self.hash = None
         self.cookies = {}
+        self.headers = {}
+        self._loaded = False
     
-    async def login(self):
+    def load_auth(self) -> bool:
         """
-        登录 Telegram
+        从配置文件加载认证数据
         
         Returns:
-            bool: 登录是否成功
+            bool: 加载是否成功
         """
         try:
-            self.client = TelegramClient(self.session_name, self.api_id, self.api_hash)
-            await self.client.start(phone=self.phone)
-            logger.info(f"✅ Telegram 登录成功: {self.phone}")
+            config_path = Path(self.config_file)
+            
+            if not config_path.exists():
+                logger.error(f"❌ 认证文件不存在: {self.config_file}")
+                logger.error("📝 请按以下步骤配置：")
+                logger.error("1. 复制 fragment_auth.json.example 为 fragment_auth.json")
+                logger.error("2. 在浏览器登录 https://fragment.com")
+                logger.error("3. 从开发者工具获取 hash 和 cookies")
+                logger.error("4. 填入 fragment_auth.json")
+                return False
+            
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            
+            # 验证必需字段
+            if 'hash' not in config:
+                logger.error("❌ 配置文件缺少 'hash' 字段")
+                return False
+            
+            if 'cookies' not in config:
+                logger.error("❌ 配置文件缺少 'cookies' 字段")
+                return False
+            
+            # 加载认证数据
+            self.hash = config['hash']
+            self.cookies = config['cookies']
+            self.headers = config.get('headers', {})
+            
+            # 验证关键 cookies
+            required_cookies = ['stel_ssid']
+            missing_cookies = [c for c in required_cookies if c not in self.cookies]
+            
+            if missing_cookies:
+                logger.warning(f"⚠️ 缺少关键 cookies: {', '.join(missing_cookies)}")
+                logger.warning("认证可能会失败，请确保从浏览器获取完整的 cookies")
+            
+            self._loaded = True
+            logger.info("✅ Fragment 认证数据加载成功")
+            logger.debug(f"Hash: {self.hash[:16]}..." if self.hash else "Hash: None")
+            logger.debug(f"Cookies: {list(self.cookies.keys())}")
+            
             return True
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ 配置文件格式错误: {e}", exc_info=True)
+            logger.error("请检查 JSON 格式是否正确")
+            return False
         except Exception as e:
-            logger.error(f"❌ Telegram 登录失败: {e}", exc_info=True)
+            logger.error(f"❌ 加载认证数据失败: {e}", exc_info=True)
             return False
     
-    async def get_fragment_auth(self):
+    def get_auth_data(self) -> Optional[Dict]:
         """
-        获取 Fragment 认证数据
+        获取认证数据
         
         Returns:
-            str: Fragment hash，失败返回 None
+            dict: 包含 hash, cookies, headers 的字典，未加载返回 None
         """
-        try:
-            # 请求 Fragment Web App
-            logger.info("正在请求 Fragment Web App...")
-            result = await self.client(functions.messages.RequestWebViewRequest(
-                peer='FragmentBot',  # Fragment 官方 Bot
-                bot='FragmentBot',
-                platform='android',
-                url='https://fragment.com'
-            ))
-            
-            # 解析返回的 URL，提取认证数据
-            # result.url = "https://fragment.com#tgWebAppData=query_id%3D...%26hash%3D..."
-            url = result.url
-            logger.debug(f"Web App URL: {url[:100]}...")
-            
-            # 提取 hash
-            hash_match = re.search(r'hash=([a-f0-9]+)', url)
-            if hash_match:
-                self.hash = hash_match.group(1)
-                logger.info(f"✅ 获取 Fragment hash: {self.hash[:16]}...")
-            else:
-                logger.warning("⚠️ 未能从 URL 中提取 hash")
-                # 尝试从 tgWebAppData 中提取
-                if 'tgWebAppData' in url:
-                    # URL decode and extract hash
-                    import urllib.parse
-                    decoded = urllib.parse.unquote(url)
-                    hash_match = re.search(r'hash=([a-f0-9]+)', decoded)
-                    if hash_match:
-                        self.hash = hash_match.group(1)
-                        logger.info(f"✅ 从 tgWebAppData 获取 hash: {self.hash[:16]}...")
-            
-            # 提取其他认证参数（如果有）
-            # 某些 token 可能需要通过访问 Fragment 页面获取
-            
-            return self.hash
-            
-        except Exception as e:
-            logger.error(f"❌ 获取 Fragment 认证失败: {e}", exc_info=True)
+        if not self._loaded:
+            logger.error("❌ 认证数据未加载，请先调用 load_auth()")
             return None
+        
+        return {
+            'hash': self.hash,
+            'cookies': self.cookies,
+            'headers': self.headers
+        }
     
-    async def get_full_auth_data(self):
+    def is_loaded(self) -> bool:
         """
-        获取完整的认证数据（包括所有参数）
+        检查认证数据是否已加载
         
         Returns:
-            dict: 包含所有认证参数的字典
+            bool: 是否已加载
         """
-        try:
-            result = await self.client(functions.messages.RequestWebViewRequest(
-                peer='FragmentBot',
-                bot='FragmentBot',
-                platform='android',
-                url='https://fragment.com'
-            ))
-            
-            url = result.url
-            import urllib.parse
-            
-            # 解析 URL 中的所有参数
-            auth_data = {
-                'url': url,
-                'hash': None,
-                'query_id': None,
-                'user': None,
-                'auth_date': None,
-            }
-            
-            # 提取 tgWebAppData
-            if 'tgWebAppData' in url:
-                # Split by # and get the fragment part
-                parts = url.split('#')
-                if len(parts) > 1:
-                    fragment = parts[1]
-                    params = urllib.parse.parse_qs(fragment)
-                    
-                    if 'tgWebAppData' in params:
-                        web_app_data = params['tgWebAppData'][0]
-                        web_app_params = urllib.parse.parse_qs(web_app_data)
-                        
-                        auth_data['hash'] = web_app_params.get('hash', [None])[0]
-                        auth_data['query_id'] = web_app_params.get('query_id', [None])[0]
-                        auth_data['user'] = web_app_params.get('user', [None])[0]
-                        auth_data['auth_date'] = web_app_params.get('auth_date', [None])[0]
-            
-            # Fallback to regex
-            if not auth_data['hash']:
-                hash_match = re.search(r'hash=([a-f0-9]+)', url)
-                if hash_match:
-                    auth_data['hash'] = hash_match.group(1)
-            
-            self.hash = auth_data['hash']
-            logger.info(f"✅ 获取完整认证数据: hash={self.hash[:16] if self.hash else 'None'}...")
-            
-            return auth_data
-            
-        except Exception as e:
-            logger.error(f"❌ 获取完整认证数据失败: {e}", exc_info=True)
-            return None
-    
-    async def close(self):
-        """关闭 Telegram 连接"""
-        if self.client:
-            await self.client.disconnect()
-            logger.info("Telegram 连接已关闭")
+        return self._loaded
