@@ -491,10 +491,13 @@ def get_cancel_keyboard():
     keyboard = [[InlineKeyboardButton("❌ 取消", callback_data="cancel_operation")]]
     return InlineKeyboardMarkup(keyboard)
 
-def get_gift_confirmation_keyboard(order_data):
-    """Gift confirmation keyboard with confirm and cancel buttons"""
+def get_gift_confirmation_keyboard():
+    """Gift confirmation keyboard with confirm and cancel buttons
+    
+    Order data is stored in user_states to avoid Telegram's 64-byte callback_data limit.
+    """
     keyboard = [
-        [InlineKeyboardButton("✅ 确认赠送", callback_data=f"confirm_gift_{order_data}")],
+        [InlineKeyboardButton("✅ 确认赠送", callback_data="confirm_gift")],
         [InlineKeyboardButton("❌ 取消", callback_data="cancel_gift")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -2311,9 +2314,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_stars_purchase(query, user, stars)
     
     # Gift confirmation flow
-    elif data.startswith("confirm_gift_"):
-        order_data = data.split("_", 2)[2]
-        await handle_gift_confirmation(query, user, order_data)
+    elif data == "confirm_gift":
+        # Order data is now in user_states, no need to decode from callback_data
+        await handle_gift_confirmation(query, user)
     
     elif data == "cancel_gift":
         await handle_gift_cancellation(query, user)
@@ -2836,26 +2839,29 @@ async def handle_stars_purchase(query, user, stars):
         
         utils.log_order_action(order_id, "Created", f"User {user.id}, {stars} stars, ${price:.4f}")
 
-async def handle_gift_confirmation(query, user, order_data):
-    """Handle gift purchase confirmation with balance-first strategy"""
-    import json
-    import base64
+async def handle_gift_confirmation(query, user):
+    """Handle gift purchase confirmation with balance-first strategy
     
+    Order data is now read from user_states instead of callback_data
+    to avoid Telegram's 64-byte callback_data limit.
+    """
     try:
-        # Decode order data
-        order_dict = json.loads(base64.b64decode(order_data).decode())
-        months = order_dict['months']
-        recipient_id = order_dict.get('recipient_id')
-        recipient_username = order_dict.get('recipient_username')
-        
-        # Get user state to verify
+        # Get user state to verify and extract order data
         user_state = db.get_user_state(user.id)
         if not user_state or user_state.get('state') != 'confirm_recipient':
             await query.answer("❌ 会话已过期，请重新开始", show_alert=True)
             return
         
         state_data = user_state.get('data', {})
+        months = state_data.get('months')
         base_price = state_data.get('price')
+        recipient_id = state_data.get('recipient_id')
+        recipient_username = state_data.get('recipient_username')
+        
+        # Validate required data
+        if not months or not base_price:
+            await query.answer("❌ 订单数据不完整，请重新开始", show_alert=True)
+            return
         
         # Check user balance
         user_balance = db.get_user_balance(user.id)
@@ -3079,17 +3085,19 @@ async def handle_recharge_confirmation(query, user, amount):
             await query.answer("❌ 会话已过期，请重新开始", show_alert=True)
             return
         
-        # Create recharge order with unique amount
+        # Create recharge order with unique amount for payment tracking
         order_id = str(uuid.uuid4())
-        price = utils.generate_unique_price(amount)
-        product_name = f"余额充值 ${price:.4f}"
+        base_amount = amount  # Store base amount for balance credit
+        unique_amount = utils.generate_unique_price(amount)  # Generate unique amount for payment verification
+        product_name = f"余额充值 ${base_amount:.2f}"
         
         db.create_order(
             order_id=order_id,
             user_id=user.id,
             months=0,
-            price=price,
-            product_type=PRODUCT_TYPE_RECHARGE
+            price=base_amount,  # Store base amount (e.g., $10.00) for balance credit
+            product_type=PRODUCT_TYPE_RECHARGE,
+            remaining_amount=unique_amount  # Store unique amount (e.g., $10.0086) for payment verification
         )
         
         # Clear state
@@ -3109,7 +3117,7 @@ async def handle_recharge_confirmation(query, user, amount):
         message = messages.get_payment_message(
             order_id=order_id,
             product_name=product_name,
-            price=price,
+            price=unique_amount,  # Show unique amount for payment
             wallet_address=config.PAYMENT_WALLET_ADDRESS,
             expires_in_minutes=30
         )
@@ -3123,13 +3131,13 @@ async def handle_recharge_confirmation(query, user, amount):
             parse_mode='Markdown'
         )
         
-        # Start payment monitoring
+        # Start payment monitoring with unique amount
         bot_instance = query.get_bot()
         asyncio.create_task(
-            monitor_payment(bot_instance, order_id, user.id, price, query.message.chat_id)
+            monitor_payment(bot_instance, order_id, user.id, unique_amount, query.message.chat_id)
         )
         
-        utils.log_order_action(order_id, "Recharge order created", f"Amount: ${price:.4f}")
+        utils.log_order_action(order_id, "Recharge order created", f"Base: ${base_amount:.2f}, Payment: ${unique_amount:.4f}")
         
         # Edit original message
         try:
@@ -3434,17 +3442,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 如果成功，会员将自动开通
 """
                 
-                # Encode order data
-                import json
-                import base64
-                order_data_dict = {
-                    'months': months,
-                    'recipient_id': None,
-                    'recipient_username': recipient_username
-                }
-                order_data = base64.b64encode(json.dumps(order_data_dict).encode()).decode()
-                
-                keyboard = keyboards.get_gift_confirmation_keyboard(order_data)
+                # No need to encode order data - it's already in user_states
+                keyboard = keyboards.get_gift_confirmation_keyboard()
                 
                 await update.message.reply_text(
                     confirmation_message,
@@ -3488,17 +3487,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Show confirmation page
         confirmation_message = messages.get_gift_confirmation_message(fetched_info, months, price)
         
-        # Encode order data for callback
-        import json
-        import base64
-        order_data_dict = {
-            'months': months,
-            'recipient_id': fetched_info.get('user_id'),
-            'recipient_username': fetched_info.get('username')
-        }
-        order_data = base64.b64encode(json.dumps(order_data_dict).encode()).decode()
-        
-        keyboard = keyboards.get_gift_confirmation_keyboard(order_data)
+        # No need to encode order data - it's already in user_states
+        keyboard = keyboards.get_gift_confirmation_keyboard()
         
         # If recipient has profile photo, send it with the message
         photo_data = fetched_info.get('photo_bytes') or fetched_info.get('photo_file_id')
@@ -3725,7 +3715,8 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                 utils.log_order_action(order_id, "Completed", f"{order['product_quantity']} stars")
             
             elif order['product_type'] == PRODUCT_TYPE_RECHARGE:
-                # Handle balance recharge
+                # Handle balance recharge - use base price, not the unique payment amount
+                logger.info(f"Processing recharge: base amount=${order['price']:.2f}, payment amount=${order.get('remaining_amount', order['price']):.4f}")
                 new_balance = db.update_user_balance(user_id, order['price'], operation='add')
                 
                 if new_balance is not None:
@@ -3733,13 +3724,13 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                     await bot.send_message(
                         chat_id=chat_id,
                         text=f"✅ 充值成功！\n\n"
-                             f"💰 充值金额：${order['price']:.4f} USDT\n"
+                             f"💰 充值金额：${order['price']:.2f} USDT\n"
                              f"💳 当前余额：${new_balance:.4f} USDT\n"
                              f"📝 交易哈希：`{tx_hash}`\n\n"
                              f"余额可用于购买会员和星星！",
                         parse_mode='Markdown'
                     )
-                    utils.log_order_action(order_id, "Completed", f"Recharge ${order['price']:.4f}")
+                    utils.log_order_action(order_id, "Completed", f"Recharge ${order['price']:.2f}")
                 else:
                     db.update_order_status(order_id, 'failed')
                     await bot.send_message(
@@ -3947,8 +3938,8 @@ async def verify_payment(query, order_id: str):
                         await query.message.reply_text(success_msg)
                         utils.log_order_action(order_id, "Completed", f"{order['product_quantity']} stars")
                     elif order['product_type'] == PRODUCT_TYPE_RECHARGE:
-                        # Handle balance recharge
-                        logger.info(f"Processing balance recharge for user {order['user_id']}, amount: ${order['price']:.4f}")
+                        # Handle balance recharge - use base price, not the unique payment amount
+                        logger.info(f"Processing recharge for user {order['user_id']}: base amount=${order['price']:.2f}, payment amount=${order.get('remaining_amount', order['price']):.4f}")
                         new_balance = db.update_user_balance(order['user_id'], order['price'], operation='add')
                         
                         if new_balance is not None:
@@ -3956,11 +3947,11 @@ async def verify_payment(query, order_id: str):
                             logger.info(f"✅ Recharge order {order_id} completed, new balance: ${new_balance:.4f}")
                             await query.message.reply_text(
                                 f"✅ 充值成功！\n\n"
-                                f"💰 充值金额：${order['price']:.4f} USDT\n"
+                                f"💰 充值金额：${order['price']:.2f} USDT\n"
                                 f"💳 当前余额：${new_balance:.4f} USDT\n\n"
                                 f"余额可用于购买会员和星星！"
                             )
-                            utils.log_order_action(order_id, "Completed", f"Recharged ${order['price']:.4f}")
+                            utils.log_order_action(order_id, "Completed", f"Recharged ${order['price']:.2f}")
                         else:
                             db.update_order_status(order_id, 'failed')
                             logger.error(f"Failed to update balance for order {order_id}")

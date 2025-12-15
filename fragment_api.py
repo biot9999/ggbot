@@ -103,20 +103,51 @@ class FragmentAPI:
         try:
             logger.info(f"调用 Fragment API: method={method}, params={params}")
             
+            # Build request data
+            request_data = {'method': method, **params}
+            request_url = f"{self.BASE_URL}/api"
+            request_params = {'hash': self.hash}
+            
+            # Log detailed request information
+            logger.debug(f"Request URL: {request_url}")
+            logger.debug(f"Request params: {request_params}")
+            logger.debug(f"Request data: {request_data}")
+            logger.debug(f"Request headers: {dict(self.session.headers)}")
+            logger.debug(f"Request cookies: {dict(self.session.cookies)}")
+            
             response = self.session.post(
-                f"{self.BASE_URL}/api",
-                params={'hash': self.hash},
-                data={'method': method, **params},
+                request_url,
+                params=request_params,
+                data=request_data,
                 timeout=self.API_TIMEOUT
             )
             
             logger.debug(f"API Response Status: {response.status_code}")
             logger.debug(f"API Response Headers: {dict(response.headers)}")
             
+            # Log raw response text for debugging (first 500 chars, be careful with sensitive data)
+            try:
+                response_text = response.text
+                # Sanitize potential sensitive data from logs
+                sanitized_text = response_text[:500]
+                # Don't log if it looks like it contains tokens or sensitive cookies
+                if 'token' not in sanitized_text.lower() and 'password' not in sanitized_text.lower():
+                    logger.debug(f"API Response Text (first 500 chars): {sanitized_text}")
+                else:
+                    logger.debug("API Response Text: [Contains sensitive data, not logged]")
+            except Exception as e:
+                logger.warning(f"Could not log response text: {e}")
+            
             response.raise_for_status()
             
             result = response.json()
             logger.info(f"API Response: {result}")
+            
+            # Log specific error details if present
+            if not result.get('ok', True) and result.get('error'):
+                logger.error(f"❌ API Error Details: {result['error']}")
+                if 'error_description' in result:
+                    logger.error(f"   Description: {result['error_description']}")
             
             return result
             
@@ -126,6 +157,13 @@ class FragmentAPI:
         except requests.exceptions.HTTPError as e:
             status_code = response.status_code if 'response' in locals() else 'unknown'
             logger.error(f"❌ HTTP 错误 {status_code}: {e}", exc_info=True)
+            # Try to parse error response
+            try:
+                if 'response' in locals():
+                    error_data = response.json()
+                    logger.error(f"   Error response data: {error_data}")
+            except:
+                pass
             return {'ok': False, 'error': f'HTTP {status_code}: {str(e)}'}
         except requests.exceptions.ConnectionError as e:
             logger.error(f"❌ 网络连接失败: {e}", exc_info=True)
@@ -135,6 +173,8 @@ class FragmentAPI:
             return {'ok': False, 'error': str(e)}
         except ValueError as e:
             logger.error(f"❌ JSON 解析失败: {e}", exc_info=True)
+            if 'response' in locals():
+                logger.error(f"   Response text: {response.text[:500]}")
             return {'ok': False, 'error': f'Invalid JSON response: {str(e)}'}
         except Exception as e:
             logger.error(f"❌ API 调用失败: {e}", exc_info=True)
