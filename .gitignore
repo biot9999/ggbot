@@ -56,6 +56,9 @@ fragment_session.json
 *.session
 *.session-journal
 
+# Telethon Sessions Directory (contains pre-authorized sessions)
+sessions/
+
 # QR Codes
 qrcodes/
 
@@ -65,3 +68,5 @@ data/
 # 运行时文件
 bot.pid
 
+# Test files
+test_fixes.py
