@@ -1719,11 +1719,27 @@ class TronPayment:
     async def verify_usdt_authenticity(self, tx_hash: str, tx_from_account_list: Optional[Dict] = None) -> bool:
         """
         Verify that the USDT transaction is real (not fake USDT)
-        Checks if the token contract matches the official USDT TRC20 contract
+        Uses a three-tier validation hierarchy for resilience:
+        
+        1. Primary: /v1/transactions/{tx_hash} - Transaction details with trc20_transfer data
+        2. Fallback: /v1/transactions/{tx_hash}/events - Event logs for TRC20 transfers
+        3. Last resort: Account list data - Already validated during payment detection
+        
+        Security considerations:
+        - Tier 1 & 2: Direct blockchain verification (most secure)
+        - Tier 3: Relaxed validation using account list data when APIs fail (404/5xx)
+                 Safe because: transaction already matched unique amount + official contract + our wallet
         
         Args:
             tx_hash: Transaction hash to verify
-            tx_from_account_list: Optional transaction data from account list for fallback validation
+            tx_from_account_list: Optional transaction data from account transactions API.
+                                 Expected structure: {
+                                     'transaction_id': str,
+                                     'token_info': {'address': str, 'decimals': int, ...},
+                                     'to': str (recipient address),
+                                     'from': str (sender address),
+                                     'value': int (amount in smallest unit)
+                                 }
             
         Returns:
             bool: True if authentic USDT, False otherwise
@@ -1731,7 +1747,7 @@ class TronPayment:
         try:
             logger.debug(f"Verifying USDT authenticity for TX: {tx_hash}")
             
-            # Try to get transaction details from TronGrid
+            # Tier 1: Try to get transaction details from TronGrid
             tx_info = await self.verify_transaction(tx_hash)
             
             if tx_info:
@@ -1751,7 +1767,7 @@ class TronPayment:
                     logger.info(f"✅ Authentic USDT verified for TX: {tx_hash}")
                     return True
                 
-                # No TRC20 transfers in main response, try events endpoint
+                # Tier 2: No TRC20 transfers in main response, try events endpoint
                 logger.debug(f"No TRC20 transfers in main response, trying events endpoint")
                 events_info = await self.get_transaction_events(tx_hash)
                 
@@ -1767,7 +1783,7 @@ class TronPayment:
                                 logger.warning(f"⚠️ Fake USDT detected! TX: {tx_hash}, Contract: {event_contract}")
                                 return False
             
-            # Details API failed or unavailable - use relaxed validation if account list data available
+            # Tier 3: Details API failed/unavailable - use relaxed validation with account list data
             if tx_from_account_list:
                 logger.info("Details API unavailable; using account list validation")
                 
