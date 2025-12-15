@@ -25,6 +25,9 @@ TELEGRAM_API_HASH = os.getenv('TELEGRAM_API_HASH', 'b18441a1ff607e10a989891a5462
 # 用户手机号（需要配置，国际格式，如 +8613800138000）
 TELEGRAM_PHONE = os.getenv('TELEGRAM_PHONE', '')
 
+# 2FA 密码（如果账号启用了两步验证）
+TELEGRAM_2FA_PASSWORD = os.getenv('TELEGRAM_2FA_PASSWORD', '')
+
 # Telethon Session 文件名
 TELEGRAM_SESSION = os.getenv('TELEGRAM_SESSION', 'fragment_session')
 

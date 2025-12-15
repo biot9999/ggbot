@@ -937,7 +937,7 @@ def get_gift_confirmation_message(recipient_info, months, price):
     # Recipient information
     message += "**收礼人信息：**\n"
     
-    if recipient_info.get('photo_file_id'):
+    if recipient_info.get('photo_bytes') or recipient_info.get('photo_file_id'):
         message += f"📷 头像：已获取\n"
     
     if recipient_info.get('first_name') or recipient_info.get('last_name'):
@@ -3056,104 +3056,79 @@ async def send_payment_info(query, order_id, product_name, price, user_id, balan
 
 async def fetch_recipient_info(bot, user_id=None, username=None):
     """
-    Fetch recipient information from Telegram API
-    Priority: text_mention > Bot API get_chat > Telethon resolver
+    Fetch recipient information using Telethon-only approach
     
     Args:
-        bot: Bot instance
+        bot: Bot instance (kept for compatibility, but not used for resolution)
         user_id: Telegram user ID (optional)
         username: Telegram username without @ (optional)
     
     Returns:
-        dict: User info or None if all methods fail
+        dict: User info or None if resolution fails
     """
     try:
-        # Method 1: Try Bot API get_chat
-        if user_id:
-            # Try to get user info by ID
-            try:
-                chat = await bot.get_chat(user_id)
-                # Extract user information
-                info = {
-                    'user_id': chat.id,
-                    'username': chat.username,
-                    'first_name': chat.first_name,
-                    'last_name': chat.last_name,
-                    'photo_file_id': None
-                }
-                
-                # Try to get profile photo
-                try:
-                    photos = await bot.get_user_profile_photos(chat.id, limit=1)
-                    if photos.total_count > 0:
-                        photo = photos.photos[0][0]
-                        info['photo_file_id'] = photo.file_id
-                except Exception as e:
-                    logger.debug(f"Could not get profile photo: {e}")
-                
-                logger.info(f"✅ Bot API resolved user_id {user_id}")
-                return info
-                
-            except Exception as e:
-                logger.warning(f"Bot API could not get chat for user_id {user_id}: {e}")
-                # Fall through to Telethon if username available
-                
-        elif username:
-            # Try to get user info by username via Bot API
-            try:
-                chat = await bot.get_chat(f"@{username}")
-                info = {
-                    'user_id': chat.id,
-                    'username': chat.username,
-                    'first_name': chat.first_name,
-                    'last_name': chat.last_name,
-                    'photo_file_id': None
-                }
-                
-                # Try to get profile photo
-                try:
-                    photos = await bot.get_user_profile_photos(chat.id, limit=1)
-                    if photos.total_count > 0:
-                        photo = photos.photos[0][0]
-                        info['photo_file_id'] = photo.file_id
-                except Exception as e:
-                    logger.debug(f"Could not get profile photo: {e}")
-                
-                logger.info(f"✅ Bot API resolved username @{username}")
-                return info
-                
-            except Exception as e:
-                logger.warning(f"Bot API could not get chat for username @{username}: {e}")
-                # Fall through to Telethon
+        # Get Telethon resolver
+        resolver = await get_resolver()
         
-        # Method 2: Try Telethon resolver as fallback (only for username)
+        if not resolver:
+            logger.warning("Telethon resolver not available (not configured)")
+            return None
+        
+        # Try Telethon resolution
         if username:
-            try:
-                logger.info(f"Attempting Telethon resolution for @{username}")
-                resolver = await get_resolver()
+            # Resolve by username
+            logger.info(f"Resolving username @{username} via Telethon")
+            telethon_info = await resolver.resolve_username(username)
+            
+            if telethon_info:
+                # Try to get profile photo
+                photo_bytes = await resolver.get_profile_photo(telethon_info['user_id'])
                 
-                if resolver:
-                    telethon_info = await resolver.resolve_username(username)
+                # Convert to format expected by rest of code
+                info = {
+                    'user_id': telethon_info['user_id'],
+                    'username': telethon_info['username'],
+                    'first_name': telethon_info['first_name'],
+                    'last_name': telethon_info.get('last_name', ''),
+                    'photo_file_id': None,  # We have photo_bytes instead
+                    'photo_bytes': photo_bytes  # Store bytes for later use
+                }
+                logger.info(f"✅ Telethon resolved @{username} to user_id {info['user_id']}")
+                return info
+            else:
+                logger.warning(f"Telethon could not resolve username @{username}")
+                return None
+                
+        elif user_id:
+            # Resolve by user_id
+            logger.info(f"Resolving user_id {user_id} via Telethon")
+            try:
+                # For user_id, we need to get entity directly
+                if not resolver._connected:
+                    await resolver.connect()
+                
+                entity = await resolver.client.get_entity(user_id)
+                
+                if entity:
+                    # Try to get profile photo
+                    photo_bytes = await resolver.get_profile_photo(user_id)
                     
-                    if telethon_info:
-                        # Convert Telethon info to our format
-                        info = {
-                            'user_id': telethon_info['user_id'],
-                            'username': telethon_info['username'],
-                            'first_name': telethon_info['first_name'],
-                            'last_name': telethon_info.get('last_name', ''),
-                            'photo_file_id': None  # Telethon photo bytes not compatible with Bot API
-                        }
-                        logger.info(f"✅ Telethon resolved @{username} to user_id {info['user_id']}")
-                        return info
-                else:
-                    logger.info("Telethon resolver not available (not configured)")
+                    info = {
+                        'user_id': entity.id,
+                        'username': getattr(entity, 'username', None),
+                        'first_name': getattr(entity, 'first_name', ''),
+                        'last_name': getattr(entity, 'last_name', ''),
+                        'photo_file_id': None,
+                        'photo_bytes': photo_bytes
+                    }
+                    logger.info(f"✅ Telethon resolved user_id {user_id}")
+                    return info
                     
             except Exception as e:
-                logger.warning(f"Telethon resolution failed for @{username}: {e}")
+                logger.warning(f"Telethon could not resolve user_id {user_id}: {e}")
+                return None
         
-        # All methods failed
-        logger.warning(f"All resolution methods failed for user_id={user_id}, username={username}")
+        logger.warning(f"No valid input for resolution: user_id={user_id}, username={username}")
         return None
         
     except Exception as e:
@@ -3375,10 +3350,11 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         keyboard = keyboards.get_gift_confirmation_keyboard(order_data)
         
         # If recipient has profile photo, send it with the message
-        if fetched_info.get('photo_file_id'):
+        photo_data = fetched_info.get('photo_bytes') or fetched_info.get('photo_file_id')
+        if photo_data:
             try:
                 await update.message.reply_photo(
-                    photo=fetched_info['photo_file_id'],
+                    photo=photo_data,  # Can be either bytes or file_id
                     caption=confirmation_message,
                     reply_markup=keyboard,
                     parse_mode='Markdown'

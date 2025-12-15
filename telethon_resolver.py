@@ -212,7 +212,7 @@ async def get_resolver() -> Optional[TelethonResolver]:
                 api_hash=config.TELEGRAM_API_HASH,
                 session_name=config.TELEGRAM_SESSION,
                 phone=config.TELEGRAM_PHONE,
-                password=os.getenv('TELEGRAM_2FA_PASSWORD')  # Optional 2FA password
+                password=config.TELEGRAM_2FA_PASSWORD  # Optional 2FA password
             )
             
             # Try to connect
