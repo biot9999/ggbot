@@ -1063,6 +1063,9 @@ class Database:
             status: New status value
             tx_hash: Optional transaction hash
             error: Optional error message. If provided, increments retry_count and stores error
+            
+        Returns:
+            int: The updated retry_count if error was provided, else None
         """
         update_data = {
             'status': status,
@@ -1077,18 +1080,21 @@ class Database:
         if error:
             update_data['last_error'] = error
             # Use $inc for atomic retry count increment
-            self.orders.update_one(
+            result = self.orders.find_one_and_update(
                 {'order_id': order_id},
                 {
                     '$set': update_data,
                     '$inc': {'retry_count': 1}
-                }
+                },
+                return_document=True  # Return the updated document
             )
+            return result.get('retry_count', 1) if result else 1
         else:
             self.orders.update_one(
                 {'order_id': order_id},
                 {'$set': update_data}
             )
+            return None
     
     def get_pending_orders(self):
         """Get all pending orders"""
@@ -2916,10 +2922,7 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                 else:
                     # Keep order as 'paid' for manual retry, track error
                     error_msg = "Fragment service error during Premium gifting"
-                    db.update_order_status(order_id, 'paid', error=error_msg)
-                    # After update, retry_count will be at least 1
-                    order = db.get_order(order_id)
-                    retry_count = order.get('retry_count', 0)
+                    retry_count = db.update_order_status(order_id, 'paid', error=error_msg)
                     
                     await bot.send_message(
                         chat_id=chat_id,
@@ -3106,10 +3109,7 @@ async def verify_payment(query, order_id: str):
                         else:
                             # Keep order as 'paid' for manual retry, track error
                             error_msg = "Fragment service error during Premium gifting"
-                            db.update_order_status(order_id, 'paid', error=error_msg)
-                            # After update, retry_count will be at least 1
-                            order_updated = db.get_order(order_id)
-                            retry_count = order_updated.get('retry_count', 0)
+                            retry_count = db.update_order_status(order_id, 'paid', error=error_msg)
                             
                             logger.error(f"Failed to gift Premium for order {order_id}, attempt {retry_count}")
                             await query.message.reply_text(
