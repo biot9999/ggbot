@@ -82,6 +82,9 @@ PREMIUM_PACKAGES = [3, 6, 12]
 # Stars package options (quantity)
 STARS_PACKAGES = [100, 250, 500, 1000, 2500]
 
+# Error messages
+ERROR_MSG_FRAGMENT_GIFTING_FAILED = "Fragment service error during Premium gifting"
+
 logger = logging.getLogger(__name__)
 
 # ============================================================================
@@ -1065,7 +1068,8 @@ class Database:
             error: Optional error message. If provided, increments retry_count and stores error
             
         Returns:
-            int: The updated retry_count if error was provided, else None
+            Optional[int]: The updated retry_count if error was provided, None otherwise.
+                          Returns 0 if order not found (should not happen in normal operation).
         """
         update_data = {
             'status': status,
@@ -2925,8 +2929,7 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                     utils.log_order_action(order_id, "Completed", "Premium gifted successfully")
                 else:
                     # Keep order as 'paid' for manual retry, track error
-                    error_msg = "Fragment service error during Premium gifting"
-                    retry_count = db.update_order_status(order_id, 'paid', error=error_msg)
+                    retry_count = db.update_order_status(order_id, 'paid', error=ERROR_MSG_FRAGMENT_GIFTING_FAILED)
                     
                     await bot.send_message(
                         chat_id=chat_id,
@@ -3112,8 +3115,7 @@ async def verify_payment(query, order_id: str):
                             utils.log_order_action(order_id, "Completed", "Premium gifted")
                         else:
                             # Keep order as 'paid' for manual retry, track error
-                            error_msg = "Fragment service error during Premium gifting"
-                            retry_count = db.update_order_status(order_id, 'paid', error=error_msg)
+                            retry_count = db.update_order_status(order_id, 'paid', error=ERROR_MSG_FRAGMENT_GIFTING_FAILED)
                             
                             logger.error(f"Failed to gift Premium for order {order_id}, attempt {retry_count}")
                             await query.message.reply_text(
