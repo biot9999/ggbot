@@ -1079,7 +1079,7 @@ class Database:
         # Handle error tracking with atomic increment
         if error:
             update_data['last_error'] = error
-            # Use $inc for atomic retry count increment
+            # Use find_one_and_update for atomic retry count increment
             result = self.orders.find_one_and_update(
                 {'order_id': order_id},
                 {
@@ -1088,7 +1088,12 @@ class Database:
                 },
                 return_document=True  # Return the updated document
             )
-            return result.get('retry_count', 1) if result else 1
+            # Return updated retry_count, or 0 if order not found (shouldn't happen)
+            if result:
+                return result.get('retry_count', 0)
+            else:
+                logger.warning(f"Order {order_id} not found during status update with error")
+                return 0
         else:
             self.orders.update_one(
                 {'order_id': order_id},
@@ -2698,9 +2703,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 # If we couldn't fetch but have ID from entity, continue with what we have
                 recipient_first_name = "User"
         
-        # Fetch user information from Telegram - try both ID and username
+        # Fetch user information from Telegram
         if not recipient_id and recipient_username:
-            # Try to fetch by username
             fetched_info = await fetch_recipient_info(context.bot, None, recipient_username)
         elif recipient_id and not recipient_first_name:
             fetched_info = await fetch_recipient_info(context.bot, recipient_id, recipient_username)
