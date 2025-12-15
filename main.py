@@ -82,6 +82,9 @@ PREMIUM_PACKAGES = [3, 6, 12]
 # Stars package options (quantity)
 STARS_PACKAGES = [100, 250, 500, 1000, 2500]
 
+# Error messages
+ERROR_MSG_FRAGMENT_GIFTING_FAILED = "Fragment service error during Premium gifting"
+
 logger = logging.getLogger(__name__)
 
 # ============================================================================
@@ -573,11 +576,6 @@ def get_payment_message(order_id, product_name, price, wallet_address, expires_i
 
 ━━━━━━━━━━━━━━
 
-# ============================================================================
-# KEYBOARD LAYOUTS
-# ============================================================================
-
-
 💳 **付款信息**
 
 🔹 网络：TRC20 (Tron)
@@ -1060,8 +1058,19 @@ class Database:
         """Get order by order_id"""
         return self.orders.find_one({'order_id': order_id})
     
-    def update_order_status(self, order_id, status, tx_hash=None):
-        """Update order status"""
+    def update_order_status(self, order_id, status, tx_hash=None, error=None):
+        """Update order status
+        
+        Args:
+            order_id: The order identifier
+            status: New status value
+            tx_hash: Optional transaction hash
+            error: Optional error message. If provided, increments retry_count and stores error
+            
+        Returns:
+            Optional[int]: The updated retry_count if error was provided, None otherwise.
+                          Returns 0 if order not found (should not happen in normal operation).
+        """
         update_data = {
             'status': status,
             'updated_at': datetime.now()
@@ -1071,10 +1080,30 @@ class Database:
         if status == 'completed':
             update_data['completed_at'] = datetime.now()
         
-        self.orders.update_one(
-            {'order_id': order_id},
-            {'$set': update_data}
-        )
+        # Handle error tracking with atomic increment
+        if error:
+            update_data['last_error'] = error
+            # Use find_one_and_update for atomic retry count increment
+            result = self.orders.find_one_and_update(
+                {'order_id': order_id},
+                {
+                    '$set': update_data,
+                    '$inc': {'retry_count': 1}
+                },
+                return_document=True  # Return the updated document
+            )
+            # Return updated retry_count, or 0 if order not found (shouldn't happen)
+            if result:
+                return result.get('retry_count', 0)
+            else:
+                logger.warning(f"Order {order_id} not found during status update with error")
+                return 0
+        else:
+            self.orders.update_one(
+                {'order_id': order_id},
+                {'$set': update_data}
+            )
+            return None
     
     def get_pending_orders(self):
         """Get all pending orders"""
@@ -2678,33 +2707,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 # If we couldn't fetch but have ID from entity, continue with what we have
                 recipient_first_name = "User"
         
-        # If username provided without ID, explain Bot API limitations
-        elif recipient_username and not recipient_id:
-            await update.message.reply_text(
-                "⚠️ **关于 Username 验证的说明**\n\n"
-                "由于 Telegram Bot API 限制，我们无法直接通过 @username 获取用户信息。\n\n"
-                "**推荐方式：**\n"
-                "✨ **使用 @ 提及功能**（最简单）\n"
-                "   • 输入 @ 后选择联系人\n"
-                "   • 如果显示为蓝色链接，说明可以识别\n"
-                "   • Bot 会自动获取完整用户信息\n\n"
-                "**其他方式：**\n\n"
-                "1️⃣ **转发对方的消息**\n"
-                "   • 转发对方的任意消息给我\n"
-                "   • 我可以从转发消息中获取准确的用户 ID\n\n"
-                "2️⃣ **获取对方的 User ID**\n"
-                "   • 让对方发送 /start 给 @userinfobot\n"
-                "   • 获取数字 ID 后发送给我\n\n"
-                "3️⃣ **让对方先使用本 Bot**\n"
-                "   • 让对方发送 /start 给本 Bot\n"
-                "   • 之后重新输入 @username\n\n"
-                "或点击取消按钮取消操作",
-                reply_markup=keyboards.get_cancel_keyboard(),
-                parse_mode='Markdown'
-            )
-            return
-        
-        # Fetch user information from Telegram if we only have username
+        # Fetch user information from Telegram
         if not recipient_id and recipient_username:
             fetched_info = await fetch_recipient_info(context.bot, None, recipient_username)
         elif recipient_id and not recipient_first_name:
@@ -2720,7 +2723,24 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         if fetched_info is None:
             error_msg = "❌ 无法获取收礼人信息\n\n"
-            if recipient_id:
+            if recipient_username and not recipient_id:
+                # Explain username limitations more clearly
+                error_msg += (
+                    "**关于 @username 验证：**\n"
+                    "由于 Telegram Bot API 的限制，通过 @username 获取用户信息需要满足以下条件之一：\n"
+                    "• 该用户必须先与本 Bot 进行过交互（发送过 /start）\n"
+                    "• 该用户的隐私设置允许被 Bot 查询\n\n"
+                    "**推荐的解决方法：**\n\n"
+                    "✨ **最简单的方法 - 使用 @ 提及功能**\n"
+                    "   1. 输入 @ 符号\n"
+                    "   2. 从列表中选择联系人\n"
+                    "   3. 如果显示为蓝色链接，即可成功识别\n\n"
+                    "🔄 **其他方法：**\n"
+                    "   • 转发对方的任意消息给我\n"
+                    "   • 让对方先发送 /start 给本 Bot\n"
+                    "   • 获取对方的 User ID（数字格式）\n\n"
+                )
+            elif recipient_id:
                 error_msg += (
                     "**可能的原因：**\n"
                     "• User ID 不正确\n"
@@ -2730,13 +2750,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     "• 让对方先发送 /start 给本 Bot\n"
                     "• 确认 User ID 是否正确\n"
                     "• 或尝试转发对方的消息给我\n\n"
-                )
-            else:
-                error_msg += (
-                    "**可能的原因：**\n"
-                    "• 用户名拼写错误\n"
-                    "• 该用户尚未与 Bot 交互\n"
-                    "• 用户隐私设置限制\n\n"
                 )
             
             error_msg += "请检查后重新输入，或点击取消按钮"
@@ -2915,13 +2928,27 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                     )
                     utils.log_order_action(order_id, "Completed", "Premium gifted successfully")
                 else:
-                    db.update_order_status(order_id, 'failed')
+                    # Keep order as 'paid' for manual retry, track error
+                    retry_count = db.update_order_status(order_id, 'paid', error=ERROR_MSG_FRAGMENT_GIFTING_FAILED)
+                    
                     await bot.send_message(
                         chat_id=chat_id,
-                        text=f"⚠️ 支付已确认，但开通失败。\n请联系管理员处理，订单号：`{order_id}`",
+                        text=(
+                            f"⚠️ 支付已确认，但 Premium 开通遇到问题。\n\n"
+                            f"**可能原因：**\n"
+                            f"• Fragment 服务暂时不可用\n"
+                            f"• 账号验证失败\n"
+                            f"• 网络连接问题\n\n"
+                            f"**订单状态：**\n"
+                            f"• 订单号：`{order_id}`\n"
+                            f"• 状态：已支付，待处理\n"
+                            f"• 尝试次数：{retry_count}\n\n"
+                            f"管理员可以稍后重试开通。\n"
+                            f"如有疑问，请联系客服。"
+                        ),
                         parse_mode='Markdown'
                     )
-                    utils.log_order_action(order_id, "Failed", "Premium gifting failed")
+                    utils.log_order_action(order_id, "Paid-NeedsRetry", f"Premium gifting failed, attempt {retry_count}")
             
             elif order['product_type'] == PRODUCT_TYPE_STARS:
                 # For now, just mark as completed (stars functionality would need implementation)
@@ -3087,17 +3114,25 @@ async def verify_payment(query, order_id: str):
                             )
                             utils.log_order_action(order_id, "Completed", "Premium gifted")
                         else:
-                            db.update_order_status(order_id, 'failed')
-                            logger.error(f"Failed to gift Premium for order {order_id}")
+                            # Keep order as 'paid' for manual retry, track error
+                            retry_count = db.update_order_status(order_id, 'paid', error=ERROR_MSG_FRAGMENT_GIFTING_FAILED)
+                            
+                            logger.error(f"Failed to gift Premium for order {order_id}, attempt {retry_count}")
                             await query.message.reply_text(
-                                f"⚠️ 支付已确认，但开通失败。\n\n"
-                                f"可能原因：\n"
-                                f"1. Fragment 服务暂时不可用\n"
-                                f"2. 账号验证失败\n\n"
-                                f"请联系管理员处理\n订单号：`{order_id}`",
+                                f"⚠️ 支付已确认，但 Premium 开通遇到问题。\n\n"
+                                f"**可能原因：**\n"
+                                f"• Fragment 服务暂时不可用\n"
+                                f"• 账号验证失败\n"
+                                f"• 网络连接问题\n\n"
+                                f"**订单状态：**\n"
+                                f"• 订单号：`{order_id}`\n"
+                                f"• 状态：已支付，待处理\n"
+                                f"• 尝试次数：{retry_count}\n\n"
+                                f"管理员可以稍后重试开通。\n"
+                                f"如有疑问，请联系客服。",
                                 parse_mode='Markdown'
                             )
-                            utils.log_order_action(order_id, "Failed", "Premium gifting failed")
+                            utils.log_order_action(order_id, "Paid-NeedsRetry", f"Premium gifting failed, attempt {retry_count}")
                     elif order['product_type'] == PRODUCT_TYPE_STARS:
                         db.update_order_status(order_id, 'completed')
                         logger.info(f"✅ Stars order {order_id} completed")
