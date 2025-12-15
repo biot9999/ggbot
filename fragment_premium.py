@@ -76,12 +76,12 @@ class FragmentPremium:
             logger.error(f"❌ 初始化失败: {e}", exc_info=True)
             return False
     
-    def gift_premium(self, user_id: int, months: int = 12):
+    def gift_premium(self, username: str, months: int = 12):
         """
-        给指定用户赠送会员
+        给指定用户赠送会员（仅支持 username）
         
         Args:
-            user_id: Telegram 用户 ID
+            username: Telegram username (可以带或不带 @ 前缀)
             months: 月数 (3, 6, 12)
             
         Returns:
@@ -90,28 +90,20 @@ class FragmentPremium:
         if not self._initialized:
             raise Exception("未初始化，请先调用 initialize()")
         
-        logger.info(f"🎁 开始为 User ID {user_id} 开通 {months} 个月会员...")
-        logger.debug(f"   Gift details - User ID: {user_id}, Months: {months}, Type: {type(user_id)}, Type months: {type(months)}")
+        # 清理 username（移除 @ 前缀）
+        clean_username = username.lstrip('@')
         
-        # 尝试方法1: 使用 user_id 直接赠送
-        logger.info("尝试方法1: gift_premium_by_user_id")
-        result = self.api.gift_premium_by_user_id(user_id, months)
+        logger.info(f"🎁 开始为 @{clean_username} 开通 {months} 个月会员...")
+        logger.debug(f"   Gift details - Username: @{clean_username}, Months: {months}")
         
-        if result.get('ok'):
-            logger.info(f"✅ 会员开通成功！User ID: {user_id}, 月数: {months}")
-            return result
-        else:
-            logger.warning(f"⚠️ 方法1失败: {result.get('error', 'Unknown error')}")
-        
-        # 如果方法1失败，尝试方法2: 使用 updatePremiumState
-        logger.info("尝试方法2: updatePremiumState")
-        result = self.api.update_premium_state(mode='new', months=months, recipient=str(user_id))
+        # 使用浏览器精确复刻的方法
+        logger.info("使用浏览器精确复刻方法: gift_premium_by_username")
+        result = self.api.gift_premium_by_username(clean_username, months)
         
         if result.get('ok'):
-            logger.info(f"✅ 会员开通成功（备用方法）！User ID: {user_id}, 月数: {months}")
+            logger.info(f"✅ 会员开通成功！Username: @{clean_username}, 月数: {months}")
         else:
-            logger.error(f"❌ 会员开通失败（所有方法均失败）: {result.get('error', 'Unknown error')}")
-            logger.error(f"   尝试的方法: 1) gift_premium_by_user_id 2) updatePremiumState")
+            logger.error(f"❌ 会员开通失败: {result.get('error', 'Unknown error')}")
             logger.error(f"   建议: 检查 fragment_auth.json 中的认证数据是否过期")
         
         return result
