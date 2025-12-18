@@ -2530,10 +2530,14 @@ async def fulfill_order_immediately(bot, order, user_id: int, chat_id: int):
         order_id = order['order_id']
         product_type = order['product_type']
         
+        logger.info(f"[Fulfill Order] Processing order {order_id} for user {user_id}, type={product_type}")
+        
         if product_type == PRODUCT_TYPE_PREMIUM:
             # Determine recipient
             recipient_id = order.get('recipient_id') or user_id
             recipient_username = order.get('recipient_username')
+            
+            logger.info(f"[Fulfill Order] Order {order_id} - recipient_id={recipient_id}, recipient_username={recipient_username}")
             
             # If we only have username, try to resolve to ID using Telethon
             if not recipient_id and recipient_username:
@@ -2555,7 +2559,7 @@ async def fulfill_order_immediately(bot, order, user_id: int, chat_id: int):
             
             # Ensure we have recipient_username for gifting
             if not recipient_username:
-                logger.error(f"No recipient_username available for order {order_id}")
+                logger.error(f"[Fulfill Order] ❌ No recipient_username available for order {order_id}")
                 # Try to resolve recipient_id to username if we have it
                 if recipient_id:
                     try:
@@ -2569,17 +2573,24 @@ async def fulfill_order_immediately(bot, order, user_id: int, chat_id: int):
                         logger.error(f"Error resolving user_id to username: {e}")
                 
                 if not recipient_username:
-                    logger.error(f"Cannot gift Premium without username for order {order_id}")
+                    logger.error(f"[Fulfill Order] ❌ Cannot gift Premium without username for order {order_id}")
                     db.update_order_status(order_id, 'paid', error="No username available for recipient")
-                    return
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=f"⚠️ 订单已创建，但无法开通 Premium：收礼人未设置公开 username。\n\n"
+                             f"请联系管理员处理。\n订单号：`{order_id}`",
+                        parse_mode='Markdown'
+                    )
+                    return False
             
             # Gift Premium using username
-            logger.info(f"Attempting to gift {order['months']} months Premium to @{recipient_username}")
+            logger.info(f"[Fulfill Order] 🎁 Calling Fragment API to gift {order['months']} months Premium to @{recipient_username}")
+            logger.debug(f"[Fulfill Order] Fragment API params: username={recipient_username}, months={order['months']}")
             success = await fragment.gift_premium(recipient_username, order['months'])
             
             if success:
                 db.update_order_status(order_id, 'completed')
-                logger.info(f"✅ Order {order_id} completed successfully")
+                logger.info(f"[Fulfill Order] ✅ Order {order_id} completed successfully")
                 
                 # Create gift record if applicable
                 if order.get('recipient_id') or order.get('recipient_username'):
@@ -2612,10 +2623,16 @@ async def fulfill_order_immediately(bot, order, user_id: int, chat_id: int):
                 return True
             else:
                 # Keep order as 'paid' for manual retry
+                logger.error(f"[Fulfill Order] ❌ Fragment API call failed for order {order_id}")
                 retry_count = db.update_order_status(order_id, 'paid', error=ERROR_MSG_FRAGMENT_GIFTING_FAILED)
                 await bot.send_message(
                     chat_id=chat_id,
-                    text=f"⚠️ 订单已创建，但 Premium 开通遇到问题。\n\n管理员将尽快处理。\n订单号：`{order_id}`",
+                    text=f"⚠️ 订单已创建，但 Premium 开通遇到问题。\n\n"
+                         f"可能原因：\n"
+                         f"• Fragment 认证已过期\n"
+                         f"• 收礼人 username 无效\n"
+                         f"• Fragment 服务暂时不可用\n\n"
+                         f"管理员将尽快处理。\n订单号：`{order_id}`",
                     parse_mode='Markdown'
                 )
                 utils.log_order_action(order_id, "Paid-NeedsRetry", f"Premium gifting failed, attempt {retry_count}")
@@ -2871,7 +2888,13 @@ async def handle_gift_confirmation(query, user):
     try:
         # Get user state to verify and extract order data
         user_state = db.get_user_state(user.id)
+        
+        # Enhanced logging for state validation
+        logger.info(f"[Gift Confirmation] User {user.id} state check")
+        logger.debug(f"[Gift Confirmation] User state: {user_state}")
+        
         if not user_state or user_state.get('state') != 'confirm_recipient':
+            logger.warning(f"[Gift Confirmation] Invalid state for user {user.id}: {user_state}")
             await query.answer("❌ 会话已过期，请重新开始", show_alert=True)
             return
         
@@ -2881,10 +2904,23 @@ async def handle_gift_confirmation(query, user):
         recipient_id = state_data.get('recipient_id')
         recipient_username = state_data.get('recipient_username')
         
+        # Enhanced logging for order data
+        logger.info(f"[Gift Confirmation] Order data - months={months}, price={base_price}, "
+                   f"recipient_id={recipient_id}, recipient_username={recipient_username}")
+        
         # Validate required data
         if not months or not base_price:
+            logger.error(f"[Gift Confirmation] Incomplete order data for user {user.id}")
             await query.answer("❌ 订单数据不完整，请重新开始", show_alert=True)
             return
+        
+        # Validate username is present (required for Fragment API)
+        if not recipient_username:
+            logger.error(f"[Gift Confirmation] Missing recipient_username for user {user.id}, order cannot proceed")
+            await query.answer("❌ 收礼人信息缺失，请重新开始", show_alert=True)
+            return
+        
+        logger.info(f"[Gift Confirmation] Validation passed - proceeding with gift to @{recipient_username}")
         
         # Check user balance
         user_balance = db.get_user_balance(user.id)
@@ -2920,11 +2956,13 @@ async def handle_gift_confirmation(query, user):
                 # Clear state
                 db.clear_user_state(user.id)
                 
-                # Send processing message
-                await query.edit_message_text(
-                    f"⚙️ 正在处理您的订单...\n\n"
-                    f"💰 已扣除余额：${base_price:.2f}\n"
-                    f"💳 剩余余额：${new_balance:.4f}"
+                # Send processing message using safe_edit_message
+                logger.info(f"[Gift Confirmation] Sending processing message for user {user.id}")
+                await safe_edit_message(
+                    query.message,
+                    text=f"⚙️ 正在处理您的订单...\n\n"
+                         f"💰 已扣除余额：${base_price:.2f}\n"
+                         f"💳 剩余余额：${new_balance:.4f}"
                 )
                 
                 # Fulfill immediately
@@ -3075,9 +3113,13 @@ async def handle_gift_confirmation(query, user):
             
             utils.log_order_action(order_id, "Gift order confirmed", f"Recipient: {recipient_username or recipient_id}")
         
-        # Edit original message to show confirmation
+        # Edit original message to show confirmation using safe_edit_message
+        logger.debug(f"[Gift Confirmation] Attempting to edit confirmation message for user {user.id}")
         try:
-            await query.edit_message_text("✅ 已确认，请查看下方支付信息")
+            await safe_edit_message(
+                query.message,
+                text="✅ 已确认，请查看下方支付信息"
+            )
         except Exception as e:
             logger.debug(f"Could not edit message: {e}")
             
@@ -3473,7 +3515,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             logger.info(f"Could not fetch detailed info for @{recipient_username}, proceeding with username only")
             
             # Proceed with username only
-            db.set_user_state(user.id, 'confirm_recipient', {
+            state_to_save = {
                 'months': months,
                 'price': price,
                 'recipient_id': recipient_id,  # May be None
@@ -3485,7 +3527,20 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     'last_name': '',
                     'photo_file_id': None
                 }
-            })
+            }
+            
+            # Save state with logging
+            logger.info(f"[State Save] Saving confirm_recipient state for user {user.id}")
+            logger.debug(f"[State Save] State data: {state_to_save}")
+            db.set_user_state(user.id, 'confirm_recipient', state_to_save)
+            
+            # Verify state was saved
+            saved_state = db.get_user_state(user.id)
+            logger.info(f"[State Verify] State after save: {saved_state}")
+            if saved_state and saved_state.get('data', {}).get('recipient_username') == recipient_username:
+                logger.info(f"[State Verify] ✅ State saved successfully with recipient_username={recipient_username}")
+            else:
+                logger.error(f"[State Verify] ❌ State verification failed! Saved: {saved_state}")
             
             # Show confirmation with username only
             confirmation_message = f"""
@@ -3524,13 +3579,26 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
         
         # Update state to confirm_recipient with all details
-        db.set_user_state(user.id, 'confirm_recipient', {
+        state_to_save = {
             'months': months,
             'price': price,
             'recipient_id': fetched_info.get('user_id'),
             'recipient_username': fetched_info.get('username'),
             'recipient_info': fetched_info
-        })
+        }
+        
+        # Save state with logging
+        logger.info(f"[State Save] Saving confirm_recipient state for user {user.id} (with fetched info)")
+        logger.debug(f"[State Save] State data: {state_to_save}")
+        db.set_user_state(user.id, 'confirm_recipient', state_to_save)
+        
+        # Verify state was saved
+        saved_state = db.get_user_state(user.id)
+        logger.info(f"[State Verify] State after save: {saved_state}")
+        if saved_state and saved_state.get('data', {}).get('recipient_username') == fetched_info.get('username'):
+            logger.info(f"[State Verify] ✅ State saved successfully with recipient_username={fetched_info.get('username')}")
+        else:
+            logger.error(f"[State Verify] ❌ State verification failed! Saved: {saved_state}")
         
         # Show confirmation page
         confirmation_message = messages.get_gift_confirmation_message(fetched_info, months, price)
@@ -3667,6 +3735,8 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
             recipient_id = order.get('recipient_id') or user_id
             recipient_username = order.get('recipient_username')
             
+            logger.info(f"[Payment Monitor] Order {order_id} - recipient_id={recipient_id}, recipient_username={recipient_username}")
+            
             # If we only have username, try to resolve to ID using Telethon
             if not recipient_id and recipient_username:
                 logger.info(f"Attempting Telethon resolution for recipient @{recipient_username}")
@@ -3685,7 +3755,7 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
             
             # Ensure we have recipient_username for gifting
             if not recipient_username:
-                logger.error(f"No recipient_username available for order {order_id}")
+                logger.error(f"[Payment Monitor] ❌ No recipient_username available for order {order_id}")
                 # Try to resolve recipient_id to username if we have it
                 if recipient_id:
                     try:
@@ -3699,7 +3769,7 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                         logger.error(f"Error resolving user_id to username: {e}")
                 
                 if not recipient_username:
-                    logger.error(f"Cannot gift Premium without username for order {order_id}")
+                    logger.error(f"[Payment Monitor] ❌ Cannot gift Premium without username for order {order_id}")
                     db.update_order_status(order_id, 'paid', error="No username available for recipient")
                     
                     # Try to notify user
@@ -3715,10 +3785,13 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
             # Process based on product type
             if order['product_type'] == PRODUCT_TYPE_PREMIUM:
                 # Send Premium using username
+                logger.info(f"[Payment Monitor] 🎁 Calling Fragment API to gift {order['months']} months Premium to @{recipient_username}")
+                logger.debug(f"[Payment Monitor] Fragment API params: username={recipient_username}, months={order['months']}")
                 success = await fragment.gift_premium(recipient_username, order['months'])
                 
                 if success:
                     db.update_order_status(order_id, 'completed')
+                    logger.info(f"[Payment Monitor] ✅ Order {order_id} completed successfully")
                     
                     # Create gift record if applicable
                     if order.get('recipient_id') or order.get('recipient_username'):
@@ -3751,6 +3824,7 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                     utils.log_order_action(order_id, "Completed", "Premium gifted successfully")
                 else:
                     # Keep order as 'paid' for manual retry, track error
+                    logger.error(f"[Payment Monitor] ❌ Fragment API call failed for order {order_id}")
                     retry_count = db.update_order_status(order_id, 'paid', error=ERROR_MSG_FRAGMENT_GIFTING_FAILED)
                     
                     await bot.send_message(
@@ -3758,8 +3832,9 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                         text=(
                             f"⚠️ 支付已确认，但 Premium 开通遇到问题。\n\n"
                             f"**可能原因：**\n"
+                            f"• Fragment 认证已过期\n"
+                            f"• 收礼人 username 无效\n"
                             f"• Fragment 服务暂时不可用\n"
-                            f"• 账号验证失败\n"
                             f"• 网络连接问题\n\n"
                             f"**订单状态：**\n"
                             f"• 订单号：`{order_id}`\n"

@@ -88,23 +88,38 @@ class FragmentPremium:
             dict: API 响应结果
         """
         if not self._initialized:
+            logger.error("❌ FragmentPremium 未初始化，无法赠送会员")
             raise Exception("未初始化，请先调用 initialize()")
         
         # 清理 username（移除 @ 前缀）
         clean_username = username.lstrip('@')
         
-        logger.info(f"🎁 开始为 @{clean_username} 开通 {months} 个月会员...")
-        logger.debug(f"   Gift details - Username: @{clean_username}, Months: {months}")
+        logger.info(f"🎁 [Fragment Gift] 开始为 @{clean_username} 开通 {months} 个月会员...")
+        logger.info(f"[Fragment Gift] Parameters - Username: @{clean_username}, Months: {months}")
+        logger.debug(f"[Fragment Gift] Gift details - Username: @{clean_username}, Months: {months}")
+        
+        # 验证参数
+        if not clean_username:
+            logger.error("❌ [Fragment Gift] Username 为空，无法继续")
+            return {'ok': False, 'error': 'Username is empty'}
+        
+        if months not in [3, 6, 12]:
+            logger.error(f"❌ [Fragment Gift] 无效的月数: {months}，必须是 3、6 或 12")
+            return {'ok': False, 'error': f'Invalid months: {months}, must be 3, 6, or 12'}
         
         # 使用浏览器精确复刻的方法
-        logger.info("使用浏览器精确复刻方法: gift_premium_by_username")
+        logger.info("[Fragment Gift] 使用浏览器精确复刻方法: gift_premium_by_username")
         result = self.api.gift_premium_by_username(clean_username, months)
         
         if result.get('ok'):
-            logger.info(f"✅ 会员开通成功！Username: @{clean_username}, 月数: {months}")
+            logger.info(f"✅ [Fragment Gift] 会员开通成功！Username: @{clean_username}, 月数: {months}")
+            logger.info(f"[Fragment Gift] API 响应: {result}")
         else:
-            logger.error(f"❌ 会员开通失败: {result.get('error', 'Unknown error')}")
-            logger.error(f"   建议: 检查 fragment_auth.json 中的认证数据是否过期")
+            error_msg = result.get('error', 'Unknown error')
+            logger.error(f"❌ [Fragment Gift] 会员开通失败: {error_msg}")
+            logger.error(f"[Fragment Gift] 完整响应: {result}")
+            logger.error(f"[Fragment Gift] 建议: 检查 fragment_auth.json 中的认证数据是否过期")
+            logger.error(f"[Fragment Gift] 建议: 确认 @{clean_username} 是有效的 Telegram 用户名")
         
         return result
     
