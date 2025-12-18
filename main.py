@@ -2261,6 +2261,130 @@ async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='HTML'
         )
 
+async def add_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /add command - admin adjust user balance
+    
+    Usage: /add <user_id> <+|-|=> <amount> [note]
+    Examples:
+        /add 5611529170 +10.50 补偿充值失败
+        /add 5611529170 -5.00 扣除退款
+        /add 5611529170 =50.00 设置为固定值
+    """
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ 您没有权限使用此命令")
+        return
+    
+    # Check arguments
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "📝 <b>用法：</b>\n"
+            "<code>/add &lt;user_id&gt; &lt;+|-|=&gt; &lt;amount&gt; [备注]</code>\n\n"
+            "<b>示例：</b>\n"
+            "• <code>/add 5611529170 +10.50 补偿充值失败</code>\n"
+            "• <code>/add 5611529170 -5.00 扣除退款</code>\n"
+            "• <code>/add 5611529170 =50.00 设置为固定值</code>\n\n"
+            "<b>参数说明：</b>\n"
+            "• <code>user_id</code>: 用户的 Telegram ID\n"
+            "• <code>+</code>: 增加余额\n"
+            "• <code>-</code>: 减少余额\n"
+            "• <code>=</code>: 设置为固定值\n"
+            "• <code>amount</code>: 金额（正数）\n"
+            "• <code>备注</code>: 可选，操作说明",
+            parse_mode='HTML'
+        )
+        return
+    
+    try:
+        # Parse arguments
+        user_id_str = context.args[0]
+        operation_str = context.args[1]
+        amount_str = context.args[2]
+        note = ' '.join(context.args[3:]) if len(context.args) > 3 else "管理员调整"
+        
+        # Validate user_id
+        try:
+            target_user_id = int(user_id_str)
+        except ValueError:
+            await update.message.reply_text("❌ 用户 ID 必须是数字")
+            return
+        
+        # Validate operation
+        if operation_str not in ['+', '-', '=']:
+            await update.message.reply_text("❌ 操作符必须是 +、- 或 =")
+            return
+        
+        # Validate amount
+        try:
+            amount = float(amount_str)
+            if amount <= 0:
+                await update.message.reply_text("❌ 金额必须大于 0")
+                return
+        except ValueError:
+            await update.message.reply_text("❌ 金额格式错误")
+            return
+        
+        # Get current balance
+        current_balance = db.get_user_balance(target_user_id)
+        
+        # Get user info for display (try to get from db first)
+        user_info = db.get_user(target_user_id)
+        username = user_info.get('username') if user_info else None
+        username_display = f"@{username}" if username else "N/A"
+        
+        # Calculate new balance based on operation
+        if operation_str == '+':
+            new_balance = db.update_user_balance(target_user_id, amount, operation='add')
+            operation_display = f"+${amount:.2f}"
+        elif operation_str == '-':
+            # Check if sufficient balance
+            if current_balance < amount:
+                await update.message.reply_text(
+                    f"❌ 余额不足\n\n"
+                    f"👤 用户：User ID {target_user_id} ({username_display})\n"
+                    f"💳 当前余额：${current_balance:.4f} USDT\n"
+                    f"💰 尝试扣除：${amount:.2f} USDT\n"
+                    f"❌ 不足：${amount - current_balance:.2f} USDT"
+                )
+                return
+            new_balance = db.update_user_balance(target_user_id, amount, operation='subtract')
+            operation_display = f"-${amount:.2f}"
+        else:  # operation_str == '='
+            new_balance = db.update_user_balance(target_user_id, amount, operation='set')
+            operation_display = f"=${amount:.2f}"
+        
+        if new_balance is None:
+            await update.message.reply_text(
+                f"❌ 余额操作失败\n\n"
+                f"可能原因：\n"
+                f"• 数据库连接错误\n"
+                f"• 用户数据异常\n\n"
+                f"请检查日志并重试"
+            )
+            return
+        
+        # Log the operation
+        logger.info(f"[Admin Balance] Admin {update.effective_user.id} adjusted balance for user {target_user_id}: "
+                   f"{current_balance:.4f} -> {new_balance:.4f} ({operation_display}), note: {note}")
+        
+        # Send success message
+        await update.message.reply_text(
+            f"✅ <b>余额调整成功</b>\n\n"
+            f"👤 <b>用户：</b>User ID {target_user_id} ({username_display})\n"
+            f"📊 <b>操作前：</b>${current_balance:.4f} USDT\n"
+            f"📊 <b>操作后：</b>${new_balance:.4f} USDT\n"
+            f"💰 <b>变动：</b>{operation_display} USDT\n"
+            f"📝 <b>备注：</b>{note}",
+            parse_mode='HTML'
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in add_balance_command: {e}", exc_info=True)
+        await update.message.reply_text(
+            f"❌ 执行命令时发生错误\n\n"
+            f"错误信息：{str(e)[:200]}\n\n"
+            f"请查看日志获取详细信息"
+        )
+
 # ============================================================================
 # CALLBACK QUERY HANDLERS
 # ============================================================================
@@ -2689,6 +2813,8 @@ async def handle_self_purchase(query, user, months):
                 months=months,
                 price=base_price,
                 product_type=PRODUCT_TYPE_PREMIUM,
+                recipient_id=user.id,
+                recipient_username=user.username,
                 balance_to_use=base_price,
                 remaining_amount=0.0
             )
@@ -2727,6 +2853,8 @@ async def handle_self_purchase(query, user, months):
             months=months,
             price=base_price,
             product_type=PRODUCT_TYPE_PREMIUM,
+            recipient_id=user.id,
+            recipient_username=user.username,
             balance_to_use=balance_to_use,
             remaining_amount=unique_remaining
         )
@@ -2747,6 +2875,8 @@ async def handle_self_purchase(query, user, months):
             months=months,
             price=price,
             product_type=PRODUCT_TYPE_PREMIUM,
+            recipient_id=user.id,
+            recipient_username=user.username,
             balance_to_use=0.0,
             remaining_amount=price
         )
@@ -3774,7 +3904,7 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                     
                     # Try to notify user
                     try:
-                        await context.bot.send_message(
+                        await bot.send_message(
                             chat_id=user_id,
                             text="❌ 无法赠送 Premium：收礼人未设置公开 username\n\n请联系客服处理。"
                         )
@@ -3866,11 +3996,15 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
             
             elif order['product_type'] == PRODUCT_TYPE_RECHARGE:
                 # Handle balance recharge - use base price, not the unique payment amount
-                logger.info(f"Processing recharge: base amount=${order['price']:.2f}, payment amount=${order.get('remaining_amount', order['price']):.4f}")
+                logger.info(f"[Recharge] Processing recharge for order {order_id}, user_id={user_id}")
+                logger.info(f"[Recharge] Base amount: ${order['price']:.2f}, Payment amount: ${order.get('remaining_amount', order['price']):.4f}")
+                logger.info(f"[Recharge] Adding ${order['price']:.2f} to user {user_id} balance")
+                
                 new_balance = db.update_user_balance(user_id, order['price'], operation='add')
                 
                 if new_balance is not None:
                     db.update_order_status(order_id, 'completed')
+                    logger.info(f"[Recharge] ✅ Recharge successful - New balance: ${new_balance:.4f}")
                     await bot.send_message(
                         chat_id=chat_id,
                         text=f"✅ 充值成功！\n\n"
@@ -3883,6 +4017,7 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                     utils.log_order_action(order_id, "Completed", f"Recharge ${order['price']:.2f}")
                 else:
                     db.update_order_status(order_id, 'failed')
+                    logger.error(f"[Recharge] ❌ Balance update failed for order {order_id}")
                     await bot.send_message(
                         chat_id=chat_id,
                         text=f"⚠️ 支付已确认，但充值失败。\n请联系管理员处理，订单号：`{order_id}`",
@@ -4107,12 +4242,15 @@ async def verify_payment(query, order_id: str):
                         utils.log_order_action(order_id, "Completed", f"{order['product_quantity']} stars")
                     elif order['product_type'] == PRODUCT_TYPE_RECHARGE:
                         # Handle balance recharge - use base price, not the unique payment amount
-                        logger.info(f"Processing recharge for user {order['user_id']}: base amount=${order['price']:.2f}, payment amount=${order.get('remaining_amount', order['price']):.4f}")
+                        logger.info(f"[Recharge] Processing recharge for order {order_id}, user_id={order['user_id']}")
+                        logger.info(f"[Recharge] Base amount: ${order['price']:.2f}, Payment amount: ${order.get('remaining_amount', order['price']):.4f}")
+                        logger.info(f"[Recharge] Adding ${order['price']:.2f} to user {order['user_id']} balance")
+                        
                         new_balance = db.update_user_balance(order['user_id'], order['price'], operation='add')
                         
                         if new_balance is not None:
                             db.update_order_status(order_id, 'completed')
-                            logger.info(f"✅ Recharge order {order_id} completed, new balance: ${new_balance:.4f}")
+                            logger.info(f"[Recharge] ✅ Recharge successful - New balance: ${new_balance:.4f}")
                             await query.message.reply_text(
                                 f"✅ 充值成功！\n\n"
                                 f"💰 充值金额：${order['price']:.2f} USDT\n"
@@ -4122,7 +4260,7 @@ async def verify_payment(query, order_id: str):
                             utils.log_order_action(order_id, "Completed", f"Recharged ${order['price']:.2f}")
                         else:
                             db.update_order_status(order_id, 'failed')
-                            logger.error(f"Failed to update balance for order {order_id}")
+                            logger.error(f"[Recharge] ❌ Balance update failed for order {order_id}")
                             await query.message.reply_text(
                                 f"⚠️ 支付已确认，但充值失败。\n请联系管理员，订单号：`{order_id}`",
                                 parse_mode='Markdown'
@@ -4533,6 +4671,7 @@ def main():
     application.add_handler(CommandHandler("setprice", setprice_command))
     application.add_handler(CommandHandler("balance", balance_command))
     application.add_handler(CommandHandler("login", login_command))
+    application.add_handler(CommandHandler("add", add_balance_command))
     
     # Callback query handler
     application.add_handler(CallbackQueryHandler(button_callback))
