@@ -270,3 +270,121 @@ class FragmentAPI:
             logger.error(f"❌ Premium 赠送失败: {result.get('error', 'Unknown error')}")
         
         return result
+    
+    def gift_premium_by_username(self, username: str, months: int = 12):
+        """
+        通过 Username 赠送 Premium - 复刻浏览器的精确请求序列
+        
+        工作流程:
+        1. 访问赠送页面获取上下文: /premium/gift?recipient=<username>&months=<months>
+        2. 从最终 URL 提取 recipient token 和 dh 参数
+        3. 使用提取的 Referer 和最小化 payload 调用 updatePremiumState API
+        
+        Args:
+            username: Telegram username (without @)
+            months: 月数 (3, 6, 12)
+            
+        Returns:
+            dict: API 响应
+        """
+        try:
+            # Step A: 构建赠送页面 URL 并访问以建立上下文
+            # 移除 username 前面的 @ 符号（如果存在）
+            clean_username = username.lstrip('@')
+            gift_page_url = f"{self.BASE_URL}/premium/gift?recipient={clean_username}&months={months}"
+            
+            logger.info(f"🎁 开始为 @{clean_username} 赠送 {months} 个月 Premium")
+            logger.info(f"Step A: 访问赠送页面: {gift_page_url}")
+            
+            # 访问赠送页面以获取最终的 URL（可能包含 recipient token）
+            response = self.session.get(
+                gift_page_url,
+                timeout=self.API_TIMEOUT,
+                allow_redirects=True
+            )
+            
+            response.raise_for_status()
+            
+            # 获取最终 URL（重定向后的 URL）
+            final_url = response.url
+            logger.info(f"最终 Referer URL: {final_url}")
+            
+            # Step B: 从页面 HTML 或 URL 中提取 dh 参数
+            # 通常 dh 是一个时间戳或页面状态参数
+            import re
+            from urllib.parse import urlparse, parse_qs
+            
+            # 尝试从 URL 参数中提取
+            parsed_url = urlparse(final_url)
+            url_params = parse_qs(parsed_url.query)
+            
+            # 从响应文本中提取 dh 值
+            # 搜索类似 data-dh="..." 或 dh: ... 的模式
+            dh_value = None
+            dh_patterns = [
+                r'data-dh="(\d+)"',
+                r'"dh"\s*:\s*(\d+)',
+                r'dh:\s*(\d+)',
+                r'dh=(\d+)',
+            ]
+            
+            for pattern in dh_patterns:
+                match = re.search(pattern, response.text)
+                if match:
+                    dh_value = match.group(1)
+                    logger.info(f"从页面提取到 dh 值: {dh_value}")
+                    break
+            
+            # 如果未找到 dh，使用当前时间戳作为后备
+            if not dh_value:
+                import time
+                dh_value = str(int(time.time()))
+                logger.warning(f"未在页面中找到 dh 参数，使用当前时间戳: {dh_value}")
+            
+            # Step C: 使用精确的浏览器 payload 调用 API
+            # 根据问题描述，payload 只包含: mode=new, iv=false, dh=<value>, method=updatePremiumState
+            # recipient 上下文来自 Referer header
+            logger.info(f"Step B: 使用 Referer={final_url} 调用 updatePremiumState API")
+            
+            # 临时修改 Referer header 为赠送页面 URL
+            original_referer = self.session.headers.get('Referer')
+            self.session.headers['Referer'] = final_url
+            
+            try:
+                # 使用最小化 payload - 只包含 mode, iv, dh
+                # method 会被 call_api 自动添加
+                params = {
+                    'mode': 'new',
+                    'iv': 'false',
+                    'dh': dh_value,
+                }
+                
+                logger.debug(f"API 调用参数: {params}")
+                logger.debug(f"Referer header: {final_url}")
+                
+                result = self.call_api('updatePremiumState', **params)
+                
+                if result.get('ok'):
+                    logger.info(f"✅ Premium 赠送成功: @{clean_username}, {months} 个月")
+                else:
+                    logger.error(f"❌ Premium 赠送失败: {result.get('error', 'Unknown error')}")
+                
+                return result
+                
+            finally:
+                # 恢复原始 Referer
+                if original_referer:
+                    self.session.headers['Referer'] = original_referer
+                else:
+                    self.session.headers.pop('Referer', None)
+        
+        except requests.exceptions.Timeout:
+            logger.error(f"❌ 访问赠送页面超时（{self.API_TIMEOUT}秒）")
+            return {'ok': False, 'error': f'Gift page timeout after {self.API_TIMEOUT}s'}
+        except requests.exceptions.HTTPError as e:
+            status_code = response.status_code if 'response' in locals() else 'unknown'
+            logger.error(f"❌ HTTP 错误 {status_code}: {e}", exc_info=True)
+            return {'ok': False, 'error': f'HTTP {status_code}: {str(e)}'}
+        except Exception as e:
+            logger.error(f"❌ 赠送 Premium 失败: {e}", exc_info=True)
+            return {'ok': False, 'error': str(e)}

@@ -1985,19 +1985,21 @@ class FragmentAutomationWrapper:
             logger.error(f"❌ Error getting balance: {e}", exc_info=True)
             return None
     
-    async def gift_premium(self, user_id: int, months: int, max_retries: int = 3):
+    async def gift_premium(self, username: str, months: int, max_retries: int = 3):
         """
-        Gift Telegram Premium to a user
+        Gift Telegram Premium to a user by username
         
         Args:
-            user_id: Telegram user ID of the recipient
+            username: Telegram username (with or without @ prefix)
             months: Number of months (3, 6, or 12)
             max_retries: Maximum number of retry attempts (default: 3)
             
         Returns:
             bool: True if successful, False otherwise
         """
-        logger.info(f"🎁 Gifting {months} months Premium to user {user_id}")
+        # Clean username
+        clean_username = username.lstrip('@')
+        logger.info(f"🎁 Gifting {months} months Premium to @{clean_username}")
         
         for attempt in range(max_retries):
             try:
@@ -2013,12 +2015,12 @@ class FragmentAutomationWrapper:
                 result = await loop.run_in_executor(
                     None, 
                     self.premium.gift_premium, 
-                    user_id, 
+                    clean_username, 
                     months
                 )
                 
                 if result.get('ok'):
-                    logger.info(f"✅ Successfully gifted {months} months Premium to user {user_id}")
+                    logger.info(f"✅ Successfully gifted {months} months Premium to @{clean_username}")
                     return True
                 else:
                     error = result.get('error', 'Unknown error')
@@ -2542,20 +2544,38 @@ async def fulfill_order_immediately(bot, order, user_id: int, chat_id: int):
                         telethon_info = await resolver.resolve_username(recipient_username)
                         if telethon_info:
                             recipient_id = telethon_info['user_id']
+                            # Also extract username if available
+                            if telethon_info.get('username'):
+                                recipient_username = telethon_info['username']
                             logger.info(f"✅ Telethon resolved @{recipient_username} to user_id {recipient_id}")
                         else:
                             logger.warning(f"Telethon could not resolve @{recipient_username}")
                 except Exception as e:
                     logger.warning(f"Error during Telethon resolution: {e}")
             
-            # If still no recipient_id, use buyer's ID as fallback
-            if not recipient_id:
-                logger.warning(f"No recipient_id available for order {order_id}, using buyer's ID")
-                recipient_id = user_id
+            # Ensure we have recipient_username for gifting
+            if not recipient_username:
+                logger.error(f"No recipient_username available for order {order_id}")
+                # Try to resolve recipient_id to username if we have it
+                if recipient_id:
+                    try:
+                        resolver = await get_resolver()
+                        if resolver and await resolver.ensure_started():
+                            telethon_info = await resolver.resolve_user_id(recipient_id)
+                            if telethon_info and telethon_info.get('username'):
+                                recipient_username = telethon_info['username']
+                                logger.info(f"✅ Resolved user_id {recipient_id} to @{recipient_username}")
+                    except Exception as e:
+                        logger.error(f"Error resolving user_id to username: {e}")
+                
+                if not recipient_username:
+                    logger.error(f"Cannot gift Premium without username for order {order_id}")
+                    db.update_order_status(order_id, 'paid', error="No username available for recipient")
+                    return
             
-            # Gift Premium
-            logger.info(f"Attempting to gift {order['months']} months Premium to user {recipient_id}")
-            success = await fragment.gift_premium(recipient_id, order['months'])
+            # Gift Premium using username
+            logger.info(f"Attempting to gift {order['months']} months Premium to @{recipient_username}")
+            success = await fragment.gift_premium(recipient_username, order['months'])
             
             if success:
                 db.update_order_status(order_id, 'completed')
@@ -2726,13 +2746,16 @@ async def handle_gift_purchase_start(query, user, months):
     message = """
 🎁 **赠送 Premium 给好友**
 
-请输入对方的信息：
-• @username （例如：@johndoe）
-• 或者 User ID （例如：123456789）
+请输入对方的 **@username**（例如：@johndoe）
 
-💡 提示：
-• 可以在对方的个人资料中找到 username
-• User ID 可通过 @userinfobot 获取
+⚠️ **重要提示：**
+• 只支持通过 @username 赠送
+• 不支持仅使用 User ID 赠送
+• 对方必须设置了公开的 username
+
+💡 **如何查找 username：**
+• 在对方的个人资料中查看
+• 使用 @ 提及功能（会显示为蓝色链接）
 
 输入完成后按发送，或点击下方取消按钮
 """
@@ -3312,6 +3335,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     if state == 'awaiting_recipient':
         # User is providing recipient info for gift
+        # Username-only gifting: require @username, reject numeric IDs without public username
         
         # First, check if the message contains text mention entities
         recipient_id = None
@@ -3343,12 +3367,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             if recipient_info['type'] is None:
                 await update.message.reply_text(
                     "❌ 无效的输入格式\n\n"
-                    "**推荐方式：**\n"
+                    "**请输入 @username：**\n"
                     "• 使用 @ 提及功能（会显示为蓝色链接）\n"
                     "  例如：@username\n\n"
-                    "**其他方式：**\n"
-                    "• 输入 User ID（例如：123456789）\n"
-                    "• 转发对方的消息给我\n\n"
                     "💡 提示：使用 @ 提及时，如果显示为蓝色链接，\n"
                     "说明可以成功识别该用户！\n\n"
                     "或点击取消按钮取消操作",
@@ -3357,119 +3378,146 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
                 return
             
-            recipient_id = recipient_info['value'] if recipient_info['type'] == 'user_id' else None
-            recipient_username = recipient_info['value'] if recipient_info['type'] == 'username' else None
+            # Check if user provided a numeric ID
+            if recipient_info['type'] == 'user_id':
+                recipient_id = recipient_info['value']
+                # Attempt to resolve user_id to username using Telethon
+                logger.info(f"User provided numeric ID {recipient_id}, attempting to resolve to username")
+                
+                try:
+                    resolver = await get_resolver()
+                    if resolver and await resolver.ensure_started():
+                        telethon_info = await resolver.resolve_user_id(recipient_id)
+                        if telethon_info and telethon_info.get('username'):
+                            recipient_username = telethon_info['username']
+                            recipient_first_name = telethon_info['first_name']
+                            logger.info(f"✅ Resolved user_id {recipient_id} to username @{recipient_username}")
+                        else:
+                            # User ID resolved but no public username
+                            logger.warning(f"User ID {recipient_id} has no public username")
+                            await update.message.reply_text(
+                                "❌ **该用户没有设置公开的 username**\n\n"
+                                "为了赠送 Premium，对方必须：\n"
+                                "1️⃣ 在 Telegram 设置中设置 username\n"
+                                "2️⃣ 将 username 设为公开\n\n"
+                                "**如何设置：**\n"
+                                "Settings → Edit Profile → Username\n\n"
+                                "请让对方设置 username 后，再使用 @username 重新尝试。\n\n"
+                                "或点击取消按钮取消操作",
+                                reply_markup=keyboards.get_cancel_keyboard(),
+                                parse_mode='Markdown'
+                            )
+                            return
+                    else:
+                        # Telethon not available
+                        logger.warning("Telethon resolver not available for user_id resolution")
+                        await update.message.reply_text(
+                            "❌ **不支持使用 User ID 赠送**\n\n"
+                            "请使用对方的 **@username** 进行赠送。\n\n"
+                            "💡 如何获取 username：\n"
+                            "• 在对方的个人资料中查看\n"
+                            "• 使用 @ 提及功能（会显示为蓝色链接）\n\n"
+                            "或点击取消按钮取消操作",
+                            reply_markup=keyboards.get_cancel_keyboard(),
+                            parse_mode='Markdown'
+                        )
+                        return
+                except Exception as e:
+                    logger.error(f"Error resolving user_id to username: {e}", exc_info=True)
+                    await update.message.reply_text(
+                        "❌ **无法通过 User ID 查找用户**\n\n"
+                        "**原因：**\n"
+                        "系统无法访问该用户的信息（用户可能未与 Bot 互动过）\n\n"
+                        "**解决方法：**\n"
+                        "请直接使用对方的 **@username** 进行赠送\n\n"
+                        "💡 如何获取 username：\n"
+                        "• 在对方的个人资料中查看\n"
+                        "• 使用 @ 提及功能（会显示为蓝色链接）\n\n"
+                        "或点击取消按钮取消操作",
+                        reply_markup=keyboards.get_cancel_keyboard(),
+                        parse_mode='Markdown'
+                    )
+                    return
+            else:
+                # User provided username directly
+                recipient_username = recipient_info['value']
+        
+        # At this point, we should have recipient_username (required)
+        # recipient_id is optional and may be None
+        if not recipient_username:
+            await update.message.reply_text(
+                "❌ **需要提供 @username**\n\n"
+                "请输入对方的 **@username** 进行赠送。\n\n"
+                "或点击取消按钮取消操作",
+                reply_markup=keyboards.get_cancel_keyboard(),
+                parse_mode='Markdown'
+            )
+            return
         
         # Get months and price
         months = state_data.get('months')
         prices = db.get_prices()
         price = prices[months]
         
-        # If we have recipient_id from text_mention, we can proceed directly
-        if recipient_id:
-            logger.info(f"Using recipient_id from text_mention: {recipient_id}")
-            # Try to fetch more info from bot
-            fetched_info = await fetch_recipient_info(context.bot, recipient_id, None)
-            if fetched_info:
-                recipient_username = fetched_info['username']
-                recipient_first_name = fetched_info['first_name']
-            elif not recipient_first_name:
-                # If we couldn't fetch but have ID from entity, continue with what we have
-                recipient_first_name = "User"
-        
-        # Fetch user information from Telegram
-        if not recipient_id and recipient_username:
-            fetched_info = await fetch_recipient_info(context.bot, None, recipient_username)
-        elif recipient_id and not recipient_first_name:
+        # Try to fetch user information for display purposes (username is required, user_id is optional)
+        fetched_info = None
+        if recipient_id and not recipient_first_name:
+            # We have user_id from text_mention or resolution, try to get more info
             fetched_info = await fetch_recipient_info(context.bot, recipient_id, recipient_username)
-        else:
-            # We already have the info from entity
-            fetched_info = {
-                'user_id': recipient_id,
-                'username': recipient_username,
-                'first_name': recipient_first_name or "User",
-                'photo_file_id': None
-            }
+        elif recipient_username:
+            # Try to fetch by username
+            fetched_info = await fetch_recipient_info(context.bot, None, recipient_username)
         
+        # If we couldn't fetch info, proceed with username only
         if fetched_info is None:
-            # If we have a username but couldn't fetch info, offer to proceed anyway
-            if recipient_username and not recipient_id:
-                logger.info(f"Could not fetch info for @{recipient_username}, offering to proceed with username only")
-                
-                # Show option to proceed with username only
-                error_msg = (
-                    "⚠️ **无法验证收礼人信息**\n\n"
-                    "**关于 @username 验证：**\n"
-                    "由于 Telegram Bot API 和 Telethon 的限制，无法验证该用户。\n\n"
-                    "**您可以选择：**\n\n"
-                    "1️⃣ **继续使用 @username**\n"
-                    "   • 我们会记录 username\n"
-                    "   • 支付后会尝试再次解析\n"
-                    "   • 如果解析成功，会员将正常开通\n\n"
-                    "2️⃣ **重新输入其他方式**\n"
-                    "   • 使用 @ 提及功能（显示为蓝色链接）\n"
-                    "   • 转发对方的消息给我\n"
-                    "   • 获取对方的 User ID（数字格式）\n\n"
-                )
-                
-                # Update state to allow confirmation with username only
-                db.set_user_state(user.id, 'confirm_recipient', {
-                    'months': months,
-                    'price': price,
-                    'recipient_id': None,
-                    'recipient_username': recipient_username,
-                    'recipient_info': {
-                        'user_id': None,
-                        'username': recipient_username,
-                        'first_name': f"@{recipient_username}",
-                        'last_name': '',
-                        'photo_file_id': None
-                    }
-                })
-                
-                # Show confirmation with username only
-                confirmation_message = f"""
+            logger.info(f"Could not fetch detailed info for @{recipient_username}, proceeding with username only")
+            
+            # Proceed with username only
+            db.set_user_state(user.id, 'confirm_recipient', {
+                'months': months,
+                'price': price,
+                'recipient_id': recipient_id,  # May be None
+                'recipient_username': recipient_username,
+                'recipient_info': {
+                    'user_id': recipient_id,  # May be None
+                    'username': recipient_username,
+                    'first_name': recipient_first_name or f"@{recipient_username}",
+                    'last_name': '',
+                    'photo_file_id': None
+                }
+            })
+            
+            # Show confirmation with username only
+            confirmation_message = f"""
 🎁 **确认赠送信息**
 
 📦 商品：{months}个月 Telegram Premium
 💰 价格：${price:.2f} USDT
 
 👤 **收礼人**：@{recipient_username}
-⚠️ **提示**：无法验证该用户，但仍可继续
+⚠️ **提示**：将使用 @username 赠送
 
 ━━━━━━━━━━━━━━
-📌 支付后我们会再次尝试解析该用户
-如果成功，会员将自动开通
+📌 支付后会自动为该用户开通会员
 """
-                
-                # No need to encode order data - it's already in user_states
-                keyboard = keyboards.get_gift_confirmation_keyboard()
-                
-                await update.message.reply_text(
-                    confirmation_message,
-                    reply_markup=keyboard,
-                    parse_mode='Markdown'
-                )
-                return
             
-            # For other cases (no username, or user_id failed), show error
-            error_msg = "❌ 无法获取收礼人信息\n\n"
-            if recipient_id:
-                error_msg += (
-                    "**可能的原因：**\n"
-                    "• User ID 不正确\n"
-                    "• 该用户尚未与 Bot 交互\n"
-                    "• 用户隐私设置限制\n\n"
-                    "**解决方法：**\n"
-                    "• 让对方先发送 /start 给本 Bot\n"
-                    "• 确认 User ID 是否正确\n"
-                    "• 或尝试转发对方的消息给我\n\n"
-                )
-            
-            error_msg += "请检查后重新输入，或点击取消按钮"
+            keyboard = keyboards.get_gift_confirmation_keyboard()
             
             await update.message.reply_text(
-                error_msg,
+                confirmation_message,
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
+            return
+        
+        # We have fetched info, but still need to ensure username exists
+        if not fetched_info.get('username'):
+            logger.warning(f"Fetched info for user_id {fetched_info.get('user_id')} has no username")
+            await update.message.reply_text(
+                "❌ **该用户没有设置公开的 username**\n\n"
+                "为了赠送 Premium，对方必须设置公开的 username。\n\n"
+                "请让对方设置 username 后重新尝试。\n\n"
+                "或点击取消按钮取消操作",
                 reply_markup=keyboards.get_cancel_keyboard(),
                 parse_mode='Markdown'
             )
@@ -3628,19 +3676,46 @@ async def monitor_payment(bot, order_id: str, user_id: int, amount: float, chat_
                         telethon_info = await resolver.resolve_username(recipient_username)
                         if telethon_info:
                             recipient_id = telethon_info['user_id']
+                            # Also extract username if available
+                            if telethon_info.get('username'):
+                                recipient_username = telethon_info['username']
                             logger.info(f"✅ Telethon resolved @{recipient_username} to user_id {recipient_id}")
                 except Exception as e:
                     logger.warning(f"Error during Telethon resolution: {e}")
             
-            # If still no recipient_id, use buyer's ID as fallback
-            if not recipient_id:
-                logger.warning(f"No recipient_id available for order {order_id}, using buyer's ID")
-                recipient_id = user_id
+            # Ensure we have recipient_username for gifting
+            if not recipient_username:
+                logger.error(f"No recipient_username available for order {order_id}")
+                # Try to resolve recipient_id to username if we have it
+                if recipient_id:
+                    try:
+                        resolver = await get_resolver()
+                        if resolver and await resolver.ensure_started():
+                            telethon_info = await resolver.resolve_user_id(recipient_id)
+                            if telethon_info and telethon_info.get('username'):
+                                recipient_username = telethon_info['username']
+                                logger.info(f"✅ Resolved user_id {recipient_id} to @{recipient_username}")
+                    except Exception as e:
+                        logger.error(f"Error resolving user_id to username: {e}")
+                
+                if not recipient_username:
+                    logger.error(f"Cannot gift Premium without username for order {order_id}")
+                    db.update_order_status(order_id, 'paid', error="No username available for recipient")
+                    
+                    # Try to notify user
+                    try:
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text="❌ 无法赠送 Premium：收礼人未设置公开 username\n\n请联系客服处理。"
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to notify user: {e}")
+                    return
             
             # Process based on product type
             if order['product_type'] == PRODUCT_TYPE_PREMIUM:
-                # Send Premium
-                success = await fragment.gift_premium(recipient_id, order['months'])
+                # Send Premium using username
+                success = await fragment.gift_premium(recipient_username, order['months'])
                 
                 if success:
                     db.update_order_status(order_id, 'completed')
@@ -3869,19 +3944,37 @@ async def verify_payment(query, order_id: str):
                                 telethon_info = await resolver.resolve_username(recipient_username)
                                 if telethon_info:
                                     recipient_id = telethon_info['user_id']
+                                    # Also extract username if available
+                                    if telethon_info.get('username'):
+                                        recipient_username = telethon_info['username']
                                     logger.info(f"✅ Telethon resolved @{recipient_username} to user_id {recipient_id}")
                         except Exception as e:
                             logger.warning(f"Error during Telethon resolution: {e}")
                     
-                    # If still no recipient_id, use buyer's ID as fallback
-                    if not recipient_id:
-                        logger.warning(f"No recipient_id available for order {order_id}, using buyer's ID")
-                        recipient_id = order['user_id']
+                    # Ensure we have recipient_username for gifting
+                    if not recipient_username:
+                        logger.error(f"No recipient_username available for order {order_id}")
+                        # Try to resolve recipient_id to username if we have it
+                        if recipient_id:
+                            try:
+                                resolver = await get_resolver()
+                                if resolver and await resolver.ensure_started():
+                                    telethon_info = await resolver.resolve_user_id(recipient_id)
+                                    if telethon_info and telethon_info.get('username'):
+                                        recipient_username = telethon_info['username']
+                                        logger.info(f"✅ Resolved user_id {recipient_id} to @{recipient_username}")
+                            except Exception as e:
+                                logger.error(f"Error resolving user_id to username: {e}")
+                        
+                        if not recipient_username:
+                            logger.error(f"Cannot gift Premium without username for order {order_id}")
+                            db.update_order_status(order_id, 'paid', error="No username available for recipient")
+                            continue
                     
                     # Gift Premium or Stars
                     if order['product_type'] == PRODUCT_TYPE_PREMIUM:
-                        logger.info(f"Attempting to gift {order['months']} months Premium to user {recipient_id}")
-                        success = await fragment.gift_premium(recipient_id, order['months'])
+                        logger.info(f"Attempting to gift {order['months']} months Premium to @{recipient_username}")
+                        success = await fragment.gift_premium(recipient_username, order['months'])
                         
                         if success:
                             db.update_order_status(order_id, 'completed')
