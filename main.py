@@ -1083,11 +1083,11 @@ class Database:
         
         Args:
             user_id: User ID
-            amount: Amount to add or subtract
-            operation: 'add' or 'subtract'
+            amount: Amount to add, subtract, or set
+            operation: 'add', 'subtract', or 'set'
         
         Returns:
-            New balance or None if insufficient funds
+            New balance or None if insufficient funds/error
         """
         if operation == 'add':
             result = self.users.update_one(
@@ -1105,6 +1105,15 @@ class Database:
             result = self.users.update_one(
                 {'user_id': user_id},
                 {'$inc': {'balance': -amount}, '$set': {'updated_at': datetime.now()}}
+            )
+            user = self.get_user(user_id)
+            return user.get('balance', 0.0) if user else None
+        elif operation == 'set':
+            # Set balance to specific amount
+            result = self.users.update_one(
+                {'user_id': user_id},
+                {'$set': {'balance': amount, 'updated_at': datetime.now()}},
+                upsert=True
             )
             user = self.get_user(user_id)
             return user.get('balance', 0.0) if user else None
@@ -2316,18 +2325,29 @@ async def add_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Validate amount
         try:
             amount = float(amount_str)
-            if amount <= 0:
-                await update.message.reply_text("❌ 金额必须大于 0")
+            if amount < 0:
+                await update.message.reply_text("❌ 金额不能为负数")
+                return
+            # For set operation, allow 0; for add/subtract, require > 0
+            if operation_str in ['+', '-'] and amount <= 0:
+                await update.message.reply_text("❌ 增加或减少的金额必须大于 0")
                 return
         except ValueError:
             await update.message.reply_text("❌ 金额格式错误")
             return
         
-        # Get current balance
+        # Get current balance and validate user exists
         current_balance = db.get_user_balance(target_user_id)
-        
-        # Get user info for display (try to get from db first)
         user_info = db.get_user(target_user_id)
+        
+        # For non-set operations, user must exist
+        if not user_info and operation_str != '=':
+            await update.message.reply_text(
+                f"❌ 用户不存在\n\n"
+                f"User ID {target_user_id} 未在系统中找到\n"
+                f"提示：用户首次使用机器人时会自动创建"
+            )
+            return
         username = user_info.get('username') if user_info else None
         username_display = f"@{username}" if username else "N/A"
         
@@ -2381,8 +2401,7 @@ async def add_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.error(f"Error in add_balance_command: {e}", exc_info=True)
         await update.message.reply_text(
             f"❌ 执行命令时发生错误\n\n"
-            f"错误信息：{str(e)[:200]}\n\n"
-            f"请查看日志获取详细信息"
+            f"请联系管理员查看日志获取详细信息"
         )
 
 # ============================================================================
